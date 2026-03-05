@@ -265,8 +265,10 @@ namespace
           /* Set in to intersection of all previous outs */
           st[BB].in = meetIntersect(predOuts);
 
-          // TODO(student): implement transfer OUT = GEN U (IN - KILL).
+          /* Compute new out as GEN U (IN - KILL)*/
           BitVector newOut = st[BB].in;
+          newOut.reset(st[BB].kill);
+          newOut |= st[BB].gen;
 
           if (newOut != st[BB].out)
           {
