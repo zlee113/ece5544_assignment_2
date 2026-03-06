@@ -106,7 +106,6 @@ namespace
     return OS;
   }
 
-  template <typename T>
   /**
    * @brief Print bitvector as set of expressiosn
    *
@@ -115,7 +114,7 @@ namespace
    * @param bits bits in use
    * @param universe Actual bitvector
    */
-  void printBitSet(raw_ostream &OS, StringRef label, const BitVector &bits, const std::vector<T> &universe)
+  void printBitSet(raw_ostream &OS, StringRef label, const BitVector &bits, const std::vector<Expr> &universe)
   {
     OS << "  " << label << ": { ";
     bool first = true;
@@ -127,6 +126,30 @@ namespace
         OS << "; ";
       first = false;
       OS << universe[i];
+    }
+    OS << " }\n";
+  }
+
+  /**
+   * @brief Print bitvector as set of instructions
+   *
+   * @param OS Stream being printed to
+   * @param label Name for bitvector
+   * @param bits bits in use
+   * @param universe Actual bitvector
+   */
+  void printBitSet(raw_ostream &OS, StringRef label, const BitVector &bits, const std::vector<Instruction *> &universe)
+  {
+    OS << "  " << label << ": { ";
+    bool first = true;
+    for (unsigned i = 0; i < bits.size(); ++i)
+    {
+      if (!bits.test(i))
+        continue;
+      if (!first)
+        OS << "; ";
+      first = false;
+      universe[i]->printAsOperand(OS, false);
     }
     OS << " }\n";
   }
@@ -309,12 +332,153 @@ namespace
 
   struct ReachingPass : PassInfoMixin<ReachingPass>
   {
+    /**
+     * @brief Each set we need to generate for the pass
+     */
+    struct BlockState
+    {
+      BitVector in;
+      BitVector out;
+      BitVector gen;
+      BitVector kill;
+    };
+
+    /**
+     * @brief The meet function for a union of all the preds for function
+     *
+     * @param ins Bitvectors for all preds of this node
+     * @return BitVector
+     */
+    static BitVector meetUnion(const std::vector<BitVector> &ins)
+    {
+      /* If its empty nothing will intersect */
+      if (ins.empty())
+        return {};
+      /* Start with first element and then and each bit with each bit in all other ins*/
+      BitVector out = ins[0];
+      for (size_t i = 1; i < ins.size(); ++i)
+        out |= ins[i];
+      return out;
+    }
+
     PreservedAnalyses run(Function &F, FunctionAnalysisManager &)
     {
       outs() << "=== ";
       F.printAsOperand(outs(), false);
       outs() << " ===\n";
       outs() << "[starter] reaching: implement forward dataflow (gen/kill, IN/OUT)\n";
+
+      /* Fills in the "universe" block with every instruction in function */
+      std::vector<Instruction *> universe;
+      for (auto &BB : F)
+      {
+        for (auto &I : BB)
+        {
+          if (!I.getType()->isVoidTy())
+          {
+            universe.push_back(&I);
+          }
+        }
+      }
+
+      /* Creating a vector for the order of traversal through the tree */
+      DenseMap<const BasicBlock *, BlockState> st;
+      std::vector<BasicBlock *> order;
+      order.push_back(&F.getEntryBlock());
+      for (size_t i = 0; i < order.size(); ++i)
+      {
+        for (BasicBlock *succ : successors(order[i]))
+        {
+          if (std::find(order.begin(), order.end(), succ) == order.end())
+            order.push_back(succ);
+        }
+      }
+
+      /* Creates bitvector with every bit set the size of the universe */
+      BitVector all(universe.size(), true);
+      for (BasicBlock *BB : order)
+      {
+        BlockState bs;
+        /* Default in: empty set */
+        bs.in = BitVector(universe.size(), false);
+        /* Default out: Var if not entry */
+        bs.out = BitVector(universe.size(), false);
+        /* Default gen: empty set */
+        bs.gen = BitVector(universe.size(), false);
+        /* Default kill: empty set */
+        bs.kill = BitVector(universe.size(), false);
+
+        for (Instruction &I : *BB)
+        {
+          if (!I.getType()->isVoidTy())
+          {
+            /* Gets value of said instruction in the universe */
+            auto it = std::find(universe.begin(), universe.end(), &I);
+            /* Add to gen if expression matches and isn't end */
+            if (it != universe.end())
+              bs.gen.set(static_cast<unsigned>(it - universe.begin()));
+            for (size_t i = 0; i < universe.size(); ++i)
+            {
+              /* If the instruction defines a value a expression in universe uses it add it to kill */
+              if (universe[i] == &I)
+                bs.kill.set(static_cast<unsigned>(i));
+            }
+          }
+        }
+
+        /* Make kill not invalidate newly gen expressions and add it */
+        BitVector notGen = bs.gen;
+        bs.kill &= notGen.flip();
+        st[BB] = bs;
+      }
+
+      /* Iterative section for finding in and out */
+      bool changed = true;
+      while (changed)
+      {
+        /* Fixed point check */
+        changed = false;
+        for (BasicBlock *BB : order)
+        {
+          /* Get pred outs */
+          std::vector<BitVector> predOuts;
+          /* If starting outs is empty */
+          if (BB == &F.getEntryBlock())
+            predOuts.push_back(BitVector(universe.size(), false));
+          /* Checks all predecessors and add up their outs */
+          for (BasicBlock *pred : predecessors(BB))
+            predOuts.push_back(st[pred].out);
+          /* If predecessors outs was empty push empty bitvector */
+          if (predOuts.empty())
+            predOuts.push_back(BitVector(universe.size(), false));
+
+          /* Set in to intersection of all previous outs */
+          st[BB].in = meetUnion(predOuts);
+
+          /* Compute new out as GEN U (IN - KILL)*/
+          BitVector newOut = st[BB].in;
+          newOut.reset(st[BB].kill);
+          newOut |= st[BB].gen;
+
+          if (newOut != st[BB].out)
+          {
+            st[BB].out = newOut;
+            changed = true;
+          }
+        }
+      }
+
+      /* Nice print for each basic block all the required fields */
+      for (BasicBlock *BB : order)
+      {
+        outs() << "BB: ";
+        BB->printAsOperand(outs(), false);
+        outs() << "\n";
+        printBitSet(outs(), "gen", st[BB].gen, universe);
+        printBitSet(outs(), "kill", st[BB].kill, universe);
+        printBitSet(outs(), "IN", st[BB].in, universe);
+        printBitSet(outs(), "OUT", st[BB].out, universe);
+      }
       return PreservedAnalyses::all();
     }
   };
