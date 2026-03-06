@@ -336,7 +336,7 @@ namespace
 
 
             /* Fills in the "universe" block with every operand in function */
-            std::vector<Value> universe;
+            std::vector<Value*> universe;
             for (auto& BB : F)
             {
                 for (auto& I : BB)
@@ -401,6 +401,8 @@ namespace
                             if (it != universe.end() && *it == BO->getOperand(1))
                                 bs.use.set(static_cast<unsigned>(it - universe.begin()));
                         }
+
+                        //if the instruction isn't already in "use", add it to "def"
                     }
                 }
 
