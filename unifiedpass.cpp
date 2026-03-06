@@ -382,7 +382,7 @@ namespace
                 for (BasicBlock* succ : successors(order[i]))
                 {
                     if (std::find(order.begin(), order.end(), succ) == order.end())
-                        order.insert(order.begin(), succ);
+                        order.push_back(succ);
                 }
             }
 
