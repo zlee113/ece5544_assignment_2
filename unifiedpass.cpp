@@ -132,6 +132,7 @@ namespace
         OS << " }\n";
     }
 
+    //the same as printBitSet, but for when you know the universe vector is of Value* type
     void printValueBitSet(raw_ostream& OS, StringRef label, const BitVector& bits, const std::vector<Value*> universe)
     {
         OS << "  " << label << ": { ";
@@ -372,12 +373,6 @@ namespace
             std::sort(universe.begin(), universe.end());
             universe.erase(std::unique(universe.begin(), universe.end()), universe.end());
 
-            for (Value* V : universe)
-            {
-                V->printAsOperand(outs(), false);
-                outs() << "\n";
-            }
-
             //Create a vector for backwards traversal through the tree
             DenseMap<const BasicBlock*, BlockState> st;
             std::vector<BasicBlock*> order;
@@ -387,9 +382,12 @@ namespace
                 for (BasicBlock* succ : successors(order[i]))
                 {
                     if (std::find(order.begin(), order.end(), succ) == order.end())
-                        order.push_back(succ);
+                        order.insert(order.begin(), succ);
                 }
             }
+
+            for (Value* V : universe)
+                V->printAsOperand(outs(), false);
 
             /* Creates bitvector with every bit set the size of the universe */
             BitVector all(universe.size(), true);
@@ -412,19 +410,58 @@ namespace
                         /* Gets value of left operator in the universe */
                         {
                             auto it = std::lower_bound(universe.begin(), universe.end(), BO->getOperand(0));
-                            /* Add to use if operator matches and isn't end */
+                            /* Add to use if operator matches, isn't end, and isn't already in def */
                             if (it != universe.end() && *it == BO->getOperand(0))
-                                bs.use.set(static_cast<unsigned>(it - universe.begin()));
+                            {
+                                bool opInDef = false;
+                                for (int i = 0; i < bs.def.count(); i++)
+                                {
+                                    if (bs.use[i] == static_cast<unsigned>(it - universe.begin()))
+                                        opInDef = true;
+                                }
+                                if (!opInDef)
+                                {
+                                    bs.use.set(static_cast<unsigned>(it - universe.begin()));
+                                }
+                            }
                         }
                         /* Gets value of right operator in the universe */
                         {
                             auto it = std::lower_bound(universe.begin(), universe.end(), BO->getOperand(1));
-                            /* Add to use if operator matches and isn't end */
+                            /* Add to use if operator matches, isn't end, and isn't already in def */
                             if (it != universe.end() && *it == BO->getOperand(1))
-                                bs.use.set(static_cast<unsigned>(it - universe.begin()));
+                            {
+                                bool opInDef = false;
+                                for (int i = 0; i < bs.def.count(); i++)
+                                {
+                                    if (bs.use[i] == static_cast<unsigned>(it - universe.begin()))
+                                        opInDef = true;
+                                }
+                                if (!opInDef)
+                                {
+                                    bs.use.set(static_cast<unsigned>(it - universe.begin()));
+                                }
+                            }
                         }
-
+                        printValueBitSet(outs(), "use", bs.use, universe);
                         //if the instruction isn't already in "use", add it to "def"
+                        bool instInUse = false;
+                        auto it = std::lower_bound(universe.begin(), universe.end(), &I);
+                        if (it != universe.end() && *it == cast<Value>(&I))
+                        {
+                            I.printAsOperand(outs(), false);
+                            outs() << "\n";
+                            for (int i = 0; i < bs.use.count(); i++)
+                            {
+                                if (bs.use[i] == static_cast<unsigned>(it-universe.begin()))
+                                    instInUse = true;
+                            }
+                            outs() << instInUse << "\n";
+                            if (!instInUse)
+                            {
+                                bs.def.set(static_cast<unsigned>(it - universe.begin()));
+                            }
+                        }
                     }
                 }
 
