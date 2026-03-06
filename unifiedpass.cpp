@@ -132,6 +132,22 @@ namespace
         OS << " }\n";
     }
 
+    void printValueBitSet(raw_ostream& OS, StringRef label, const BitVector& bits, const std::vector<Value*> universe)
+    {
+        OS << "  " << label << ": { ";
+        bool first = true;
+        for (unsigned i = 0; i < bits.size(); ++i)
+        {
+            if (!bits.test(i))
+                continue;
+            if (!first)
+                OS << "; ";
+            first = false;
+            universe[i]->printAsOperand(OS, false);
+        }
+        OS << " }\n";
+    }
+
     /**
      * @brief Functionpass for available expression
      */
@@ -353,8 +369,14 @@ namespace
                 }
             }
             /* Removes any duplicates from the list */
-            //std::sort(universe.begin(), universe.end());
+            std::sort(universe.begin(), universe.end());
             universe.erase(std::unique(universe.begin(), universe.end()), universe.end());
+
+            for (Value* V : universe)
+            {
+                V->printAsOperand(outs(), false);
+                outs() << "\n";
+            }
 
             //Create a vector for backwards traversal through the tree
             DenseMap<const BasicBlock*, BlockState> st;
@@ -456,10 +478,10 @@ namespace
                 outs() << "BB: ";
                 BB->printAsOperand(outs(), false);
                 outs() << "\n";
-                printBitSet(outs(), "use", st[BB].use, universe);
-                printBitSet(outs(), "def", st[BB].def, universe);
-                printBitSet(outs(), "IN", st[BB].in, universe);
-                printBitSet(outs(), "OUT", st[BB].out, universe);
+                printValueBitSet(outs(), "use", st[BB].use, universe);
+                printValueBitSet(outs(), "def", st[BB].def, universe);
+                printValueBitSet(outs(), "IN", st[BB].in, universe);
+                printValueBitSet(outs(), "OUT", st[BB].out, universe);
             }
 
             return PreservedAnalyses::all();
