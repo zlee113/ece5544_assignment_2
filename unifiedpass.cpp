@@ -386,9 +386,6 @@ namespace
                 }
             }
 
-            for (Value* V : universe)
-                V->printAsOperand(outs(), false);
-
             /* Creates bitvector with every bit set the size of the universe */
             BitVector all(universe.size(), true);
             for (BasicBlock* BB : order)
@@ -397,7 +394,7 @@ namespace
                 /* Default in: empty set */
                 bs.in = BitVector(universe.size(), false);
                 /* Default out: empty set */
-                bs.out = all;
+                bs.out = BitVector(universe.size(), false);
                 /* Default use: empty set */
                 bs.use = BitVector(universe.size(), false);
                 /* Default def: empty set */
@@ -413,16 +410,7 @@ namespace
                             /* Add to use if operator matches, isn't end, and isn't already in def */
                             if (it != universe.end() && *it == BO->getOperand(0))
                             {
-                                bool opInDef = false;
-                                for (int i = 0; i < bs.def.count(); i++)
-                                {
-                                    if (bs.use[i] == static_cast<unsigned>(it - universe.begin()))
-                                        opInDef = true;
-                                }
-                                if (!opInDef)
-                                {
-                                    bs.use.set(static_cast<unsigned>(it - universe.begin()));
-                                }
+                                bs.use.set(static_cast<unsigned>(it - universe.begin()));
                             }
                         }
                         /* Gets value of right operator in the universe */
@@ -431,46 +419,23 @@ namespace
                             /* Add to use if operator matches, isn't end, and isn't already in def */
                             if (it != universe.end() && *it == BO->getOperand(1))
                             {
-                                bool opInDef = false;
-                                for (int i = 0; i < bs.def.count(); i++)
-                                {
-                                    if (bs.use[i] == static_cast<unsigned>(it - universe.begin()))
-                                        opInDef = true;
-                                }
-                                if (!opInDef)
-                                {
-                                    bs.use.set(static_cast<unsigned>(it - universe.begin()));
-                                }
+                                bs.use.set(static_cast<unsigned>(it - universe.begin()));
                             }
                         }
-                        printValueBitSet(outs(), "use", bs.use, universe);
-                        //if the instruction isn't already in "use", add it to "def"
                         bool instInUse = false;
                         auto it = std::lower_bound(universe.begin(), universe.end(), &I);
                         if (it != universe.end() && *it == cast<Value>(&I))
                         {
-                            I.printAsOperand(outs(), false);
-                            outs() << "\n";
-                            for (int i = 0; i < bs.use.count(); i++)
-                            {
-                                if (bs.use[i] == static_cast<unsigned>(it-universe.begin()))
-                                    instInUse = true;
-                            }
-                            outs() << instInUse << "\n";
-                            if (!instInUse)
-                            {
-                                bs.def.set(static_cast<unsigned>(it - universe.begin()));
-                            }
+                            bs.def.set(static_cast<unsigned>(it - universe.begin()));
                         }
                     }
                 }
 
-                /* Make def not invalidate newly use expressions and add it */
-                BitVector notUse = bs.use;
-                bs.def &= notUse.flip();
+                //if a value is in def it shouldn't be in use, this just removes all items in def from use
+                BitVector notDef = bs.def;
+                bs.use &= notDef.flip();
                 st[BB] = bs;
             }
-
             /* Iterative section for finding in and out */
             bool changed = true;
             while (changed)
@@ -484,10 +449,7 @@ namespace
 
                     //for each successor of our BB, add it to our list of successors to check
                     for (BasicBlock* succ : successors(BB))
-                        succIns.push_back(st[succ].out);
-                    //if our current basic block is the entry block make sure to add it last
-                    if (BB == &F.getEntryBlock())
-                        succIns.push_back(BitVector(universe.size(), false));
+                        succIns.push_back(st[succ].in);
                     //if our list of successors is empty, add an empty bitvector
                     if (succIns.empty())
                         succIns.push_back(BitVector(universe.size(), false));
@@ -501,9 +463,9 @@ namespace
                     newIn |= st[BB].use;
 
                     //if we have not reached a fixed point, set changed to true to run the loop again
-                    if (newIn != st[BB].out)
+                    if (newIn != st[BB].in)
                     {
-                        st[BB].out = newIn;
+                        st[BB].in = newIn;
                         changed = true;
                     }
                 }
