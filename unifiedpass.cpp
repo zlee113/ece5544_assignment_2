@@ -336,17 +336,24 @@ namespace
 
 
             /* Fills in the "universe" block with every operand in function */
-            std::vector<Expr> universe;
+            std::vector<Value> universe;
             for (auto& BB : F)
             {
                 for (auto& I : BB)
                 {
                     if (auto* BO = dyn_cast<BinaryOperator>(&I))
-                        universe.push_back(Expr::fromBO(*BO));
+                    {
+                        //if the values aren't constants add them to the vector
+                        if (!isa<ConstantInt>(BO->getOperand(0)))
+                            universe.push_back(BO->getOperand(0));
+                        if (!isa<ConstantInt>(BO->getOperand(1)))
+                            universe.push_back(BO->getOperand(1));
+                        universe.push_back(&I);
+                    }
                 }
             }
             /* Removes any duplicates from the list */
-            std::sort(universe.begin(), universe.end());
+            //std::sort(universe.begin(), universe.end());
             universe.erase(std::unique(universe.begin(), universe.end()), universe.end());
 
             //Create a vector for backwards traversal through the tree
@@ -358,7 +365,7 @@ namespace
                 for (BasicBlock* succ : successors(order[i]))
                 {
                     if (std::find(order.begin(), order.end(), succ) == order.end())
-                        order.insert(order.begin(), succ);
+                        order.push_back(succ);
                 }
             }
 
@@ -370,7 +377,7 @@ namespace
                 /* Default in: empty set */
                 bs.in = BitVector(universe.size(), false);
                 /* Default out: empty set */
-                bs.out = BitVector(universe.size(), false);
+                bs.out = all;
                 /* Default use: empty set */
                 bs.use = BitVector(universe.size(), false);
                 /* Default def: empty set */
@@ -380,21 +387,19 @@ namespace
                 {
                     if (auto* BO = dyn_cast<BinaryOperator>(&I))
                     {
-                        /* Gets expression from each instruction in basic block */
-                        Expr e = Expr::fromBO(*BO);
-                        /* Gets value of said instruction in the universe */
-                        auto it = std::lower_bound(universe.begin(), universe.end(), e);
-                        /* Add to use if expression matches and isn't end */
-                        if (it != universe.end() && *it == e)
-                            bs.use.set(static_cast<unsigned>(it - universe.begin()));
-                    }
-                    if (!I.getType()->isVoidTy())
-                    {
-                        for (size_t i = 0; i < universe.size(); ++i)
+                        /* Gets value of left operator in the universe */
                         {
-                            /* If the instruction defines a value add it to def */
-                            if (universe[i].lhs == &I || universe[i].rhs == &I)
-                                bs.def.set(static_cast<unsigned>(i));
+                            auto it = std::lower_bound(universe.begin(), universe.end(), BO->getOperand(0));
+                            /* Add to use if operator matches and isn't end */
+                            if (it != universe.end() && *it == BO->getOperand(0))
+                                bs.use.set(static_cast<unsigned>(it - universe.begin()));
+                        }
+                        /* Gets value of right operator in the universe */
+                        {
+                            auto it = std::lower_bound(universe.begin(), universe.end(), BO->getOperand(1));
+                            /* Add to use if operator matches and isn't end */
+                            if (it != universe.end() && *it == BO->getOperand(1))
+                                bs.use.set(static_cast<unsigned>(it - universe.begin()));
                         }
                     }
                 }
