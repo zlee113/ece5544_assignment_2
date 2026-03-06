@@ -358,13 +358,13 @@ namespace
             {
                 for (auto& I : BB)
                 {
-                    if (auto* BO = dyn_cast<BinaryOperator>(&I))
+                    if (!I.getType()->isVoidTy())
                     {
                         //if the values aren't constants add them to the vector
-                        if (!isa<ConstantInt>(BO->getOperand(0)))
-                            universe.push_back(BO->getOperand(0));
-                        if (!isa<ConstantInt>(BO->getOperand(1)))
-                            universe.push_back(BO->getOperand(1));
+                        if (!isa<ConstantInt>(I.getOperand(0)))
+                            universe.push_back(I.getOperand(0));
+                        if (!isa<ConstantInt>(I.getOperand(1)))
+                            universe.push_back(I.getOperand(1));
                         universe.push_back(&I);
                     }
                 }
@@ -400,40 +400,87 @@ namespace
                 /* Default def: empty set */
                 bs.def = BitVector(universe.size(), false);
 
+                std::vector<Value*> useVec, defVec;
+
                 for (Instruction& I : *BB)
                 {
-                    if (auto* BO = dyn_cast<BinaryOperator>(&I))
+                    if (!I.getType()->isVoidTy())
                     {
                         /* Gets value of left operator in the universe */
                         {
-                            auto it = std::lower_bound(universe.begin(), universe.end(), BO->getOperand(0));
-                            /* Add to use if operator matches, isn't end, and isn't already in def */
-                            if (it != universe.end() && *it == BO->getOperand(0))
+                            bool alreadyInDef = false;
+
+                            for (int i = 0; i < defVec.size(); i++)
                             {
-                                bs.use.set(static_cast<unsigned>(it - universe.begin()));
+                                if (defVec[i] == I.getOperand(0))
+                                    alreadyInDef = true;
                             }
+                            if (!alreadyInDef)
+                                useVec.push_back(I.getOperand(0));
                         }
                         /* Gets value of right operator in the universe */
                         {
-                            auto it = std::lower_bound(universe.begin(), universe.end(), BO->getOperand(1));
-                            /* Add to use if operator matches, isn't end, and isn't already in def */
-                            if (it != universe.end() && *it == BO->getOperand(1))
+                            bool alreadyInDef = false;
+
+                            for (int i = 0; i < defVec.size(); i++)
+                            {
+                                if (defVec[i] == I.getOperand(1))
+                                    alreadyInDef = true;
+                            }
+                            if (!alreadyInDef)
+                                useVec.push_back(I.getOperand(1));
+                        }
+
+                        //if the instruction is a phi node, check the incoming values
+                        if (auto* P = dyn_cast<PHINode>(&I))
+                        {
+                            for (int i = 0; i < P->getNumIncomingValues(); i++)
+                            {
+                                bool alreadyInDef = false;
+
+                                for (int i = 0; i < defVec.size(); i++)
+                                {
+                                    if (defVec[i] == P->getIncomingValue(i))
+                                        alreadyInDef = true;
+                                }
+                                if (!alreadyInDef)
+                                    useVec.push_back(P->getIncomingValue(i));
+                            }
+                        }
+
+                        for (size_t i = 0; i < universe.size(); ++i)
+                        {
+                            // If the instruction defines a value add it to def
+                            if (universe[i] == &I)
+                                //bs.def.set(static_cast<unsigned>(i));
+                                defVec.push_back(&I);
+                        }
+
+                        for (Value* V : defVec)
+                        {
+                            auto it = std::find(universe.begin(), universe.end(), V);
+                            // Add to use if operator matches, isn't end, and isn't already in def
+                            if (it != universe.end())
+                            {
+                                bs.def.set(static_cast<unsigned>(it - universe.begin()));
+                            }
+                        }
+
+                        for (Value* V : useVec)
+                        {
+                            auto it = std::find(universe.begin(), universe.end(), V);
+                            // Add to use if operator matches, isn't end, and isn't already in def
+                            if (it != universe.end())
                             {
                                 bs.use.set(static_cast<unsigned>(it - universe.begin()));
                             }
-                        }
-                        bool instInUse = false;
-                        auto it = std::lower_bound(universe.begin(), universe.end(), &I);
-                        if (it != universe.end() && *it == cast<Value>(&I))
-                        {
-                            bs.def.set(static_cast<unsigned>(it - universe.begin()));
                         }
                     }
                 }
 
-                //if a value is in def it shouldn't be in use, this just removes all items in def from use
-                BitVector notDef = bs.def;
-                bs.use &= notDef.flip();
+                printValueBitSet(outs(), "use", bs.use, universe);
+                printValueBitSet(outs(), "def", bs.def, universe);
+
                 st[BB] = bs;
             }
             /* Iterative section for finding in and out */
