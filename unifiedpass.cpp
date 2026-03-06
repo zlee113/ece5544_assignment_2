@@ -478,9 +478,6 @@ namespace
                     }
                 }
 
-                printValueBitSet(outs(), "use", bs.use, universe);
-                printValueBitSet(outs(), "def", bs.def, universe);
-
                 st[BB] = bs;
             }
             /* Iterative section for finding in and out */
