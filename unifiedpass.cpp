@@ -26,6 +26,31 @@ using namespace llvm;
 namespace
 {
 
+
+    // -------------------- Available Expressions (starter) --------------------
+
+    /**
+     * @brief Definition for Expression struct
+     */
+    struct Expr
+    {
+        Instruction::BinaryOps opcode;                  /**< Opcode value for binary instruction */
+        Value* lhs;                                     /**< Left hand side for expression */
+        Value* rhs;                                     /**< Right hand side for expression */
+        auto operator<=>(const Expr&) const = default; /**< Compare for opcode, lhs, and rhs */
+
+        /**
+         * @brief Creates an expression struct from a binary operator
+         *
+         * @param BO Binary Operator being converted
+         * @return Expr
+         */
+        static Expr fromBO(const BinaryOperator& BO)
+        {
+            return { BO.getOpcode(), BO.getOperand(0), BO.getOperand(1) };
+        }
+    };
+
     /**
      * @brief Get the Short Value Name object
      *
@@ -34,9 +59,21 @@ namespace
      */
     std::string getShortValueName(const Value* V)
     {
-      return {BO.getOpcode(), BO.getOperand(0), BO.getOperand(1)};
+        /* If value is null return null as string */
+        if (!V)
+            return "(null)";
+        /* If value has name update to str and add % */
+        if (V->hasName())
+            return "%" + V->getName().str();
+        /* If value is a constant interger return string of int */
+        if (const auto* C = dyn_cast<ConstantInt>(V))
+            return std::to_string(C->getSExtValue());
+        /* If all those scenarios fail just print to screen maybe ?*/
+        std::string S;
+        raw_string_ostream OS(S);
+        V->printAsOperand(OS, false);
+        return S;
     }
-  };
 
   /**
    * @brief Overload for expression printing
@@ -135,7 +172,6 @@ namespace
       }
       OS << " }\n";
   }
-
   /**
    * @brief Functionpass for available expression
    */
@@ -781,31 +817,146 @@ namespace
       return true;
     }
 
-    static void printState(raw_ostream &OS, StringRef label, const CPState &st,
-                           const std::vector<const Value *> &domain, bool showTop = false)
+    static void printState(raw_ostream& OS, StringRef label, const CPState& st,
+        const std::vector<const Value*>& domain, bool showTop = false)
     {
-      OS << "  " << label << ": { ";
-      bool first = true;
-      for (const Value *V : domain)
-      {
-        LVal v = st.lookup(V);
-        if (!showTop && v.kind == Kind::Top)
-          continue;
-        if (!first)
-          OS << "; ";
-        first = false;
-        /* If value is null return null as string */
-        if (!V)
-            return "(null)";
-        /* If value has name update to str and add % */
-        if (V->hasName())
-            return "%" + V->getName().str();
-        /* If value is a constant interger return string of int */
-        if (const auto* C = dyn_cast<ConstantInt>(V))
-            return std::to_string(C->getSExtValue());
-        /* If all those scenarios fail just print to screen maybe ?*/
-        std::string S;
-        raw_string_ostream OS(S);
-        V->printAsOperand(OS, false);
-        return S;
+        OS << "  " << label << ": { ";
+        bool first = true;
+        for (const Value* V : domain)
+        {
+            LVal v = st.lookup(V);
+            if (!showTop && v.kind == Kind::Top)
+                continue;
+            if (!first)
+                OS << "; ";
+            first = false;
+            V->printAsOperand(OS, false);
+            if (v.kind == Kind::Const)
+                OS << " = " << v.c;
+            else if (v.kind == Kind::Bottom)
+                OS << " = NAC";
+            else
+                OS << " = TOP";
+        }
+        OS << " }\n";
     }
+
+    PreservedAnalyses run(Function& F, FunctionAnalysisManager&)
+    {
+        outs() << "=== ";
+        F.printAsOperand(outs(), false);
+        outs() << " ===\n";
+
+        std::vector<const Value*> domain;
+        for (auto& BB : F)
+        {
+            for (auto& I : BB)
+            {
+                if (!I.getType()->isVoidTy())
+                    domain.push_back(&I);
+            }
+        }
+
+        std::vector<BasicBlock*> order;
+        order.push_back(&F.getEntryBlock());
+        for (size_t i = 0; i < order.size(); ++i)
+        {
+            for (BasicBlock* succ : successors(order[i]))
+            {
+                if (std::find(order.begin(), order.end(), succ) == order.end())
+                    order.push_back(succ);
+            }
+        }
+
+        DenseMap<const BasicBlock*, BlockState> st;
+        for (BasicBlock* BB : order)
+        {
+            BlockState bs;
+            for (const Value* V : domain)
+            {
+                bs.in[V] = LVal::top();
+                bs.out[V] = LVal::top();
+            }
+            st[BB] = std::move(bs);
+        }
+
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            for (BasicBlock* BB : order)
+            {
+                CPState newIn;
+                for (const Value* V : domain)
+                    newIn[V] = LVal::top();
+
+                bool hasPred = false;
+                for (BasicBlock* pred : predecessors(BB))
+                {
+                    hasPred = true;
+                    for (const Value* V : domain)
+                        newIn[V] = meetVal(newIn.lookup(V), st[pred].out.lookup(V));
+                }
+                if (!hasPred)
+                {
+                    for (const Value* V : domain)
+                        newIn[V] = LVal::top();
+                }
+
+                st[BB].in = newIn;
+                CPState newOut = transferBlock(*BB, newIn, st);
+                if (!sameState(st[BB].out, newOut, domain))
+                {
+                    st[BB].out = std::move(newOut);
+                    changed = true;
+                }
+            }
+        }
+
+        for (BasicBlock* BB : order)
+        {
+            outs() << "BB: ";
+            BB->printAsOperand(outs(), false);
+            outs() << "\n";
+            printState(outs(), "IN", st[BB].in, domain);
+            printState(outs(), "OUT", st[BB].out, domain);
+        }
+
+        return PreservedAnalyses::all();
+    }
+   };
+
+} // namespace
+
+extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo()
+{
+    return { LLVM_PLUGIN_API_VERSION, "UnifiedPass", "v0.3-starter", [](PassBuilder& PB)
+            {
+              PB.registerPipelineParsingCallback(
+                  [](StringRef Name, FunctionPassManager& FPM,
+                     ArrayRef<PassBuilder::PipelineElement>) -> bool
+                  {
+                    if (Name == "available")
+                    {
+                      FPM.addPass(AvailablePass());
+                      return true;
+                    }
+                    if (Name == "liveness")
+                    {
+                      FPM.addPass(LivenessPass());
+                      return true;
+                    }
+                    if (Name == "reaching")
+                    {
+                      FPM.addPass(ReachingPass());
+                      return true;
+                    }
+                    if (Name == "constantprop")
+                    {
+                      FPM.addPass(ConstantPropPass());
+                      return true;
+                    }
+                    return false;
+                  });
+            } };
+}
