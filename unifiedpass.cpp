@@ -6,6 +6,7 @@
 #include <numeric>
 #include <string>
 #include <vector>
+#include <stack>
 
 #include <llvm/ADT/BitVector.h>
 #include <llvm/ADT/DenseMap.h>
@@ -25,49 +26,13 @@ using namespace llvm;
 namespace
 {
 
-  /**
-   * @brief Get the Short Value Name object
-   *
-   * @param V Value we want to obtain a string form of
-   * @return std::string
-   */
-  std::string getShortValueName(const Value *V)
-  {
-    /* If value is null return null as string */
-    if (!V)
-      return "(null)";
-    /* If value has name update to str and add % */
-    if (V->hasName())
-      return "%" + V->getName().str();
-    /* If value is a constant interger return string of int */
-    if (const auto *C = dyn_cast<ConstantInt>(V))
-      return std::to_string(C->getSExtValue());
-    /* If all those scenarios fail just print to screen maybe ?*/
-    std::string S;
-    raw_string_ostream OS(S);
-    V->printAsOperand(OS, false);
-    return S;
-  }
-
-  // -------------------- Available Expressions (starter) --------------------
-
-  /**
-   * @brief Definition for Expression struct
-   */
-  struct Expr
-  {
-    Instruction::BinaryOps opcode;                  /**< Opcode value for binary instruction */
-    Value *lhs;                                     /**< Left hand side for expression */
-    Value *rhs;                                     /**< Right hand side for expression */
-    auto operator<=>(const Expr &) const = default; /**< Compare for opcode, lhs, and rhs */
-
     /**
-     * @brief Creates an expression struct from a binary operator
+     * @brief Get the Short Value Name object
      *
-     * @param BO Binary Operator being converted
-     * @return Expr
+     * @param V Value we want to obtain a string form of
+     * @return std::string
      */
-    static Expr fromBO(const BinaryOperator &BO)
+    std::string getShortValueName(const Value* V)
     {
       return {BO.getOpcode(), BO.getOperand(0), BO.getOperand(1)};
     }
@@ -152,6 +117,23 @@ namespace
       universe[i]->printAsOperand(OS, false);
     }
     OS << " }\n";
+  }
+
+  //the same as printBitSet, but for when you know the universe vector is of Value* type
+  void printValueBitSet(raw_ostream& OS, StringRef label, const BitVector& bits, const std::vector<Value*> universe)
+  {
+      OS << "  " << label << ": { ";
+      bool first = true;
+      for (unsigned i = 0; i < bits.size(); ++i)
+      {
+          if (!bits.test(i))
+              continue;
+          if (!first)
+              OS << "; ";
+          first = false;
+          universe[i]->printAsOperand(OS, false);
+      }
+      OS << " }\n";
   }
 
   /**
@@ -320,14 +302,220 @@ namespace
 
   struct LivenessPass : PassInfoMixin<LivenessPass>
   {
-    PreservedAnalyses run(Function &F, FunctionAnalysisManager &)
-    {
-      outs() << "=== ";
-      F.printAsOperand(outs(), false);
-      outs() << " ===\n";
-      outs() << "[starter] liveness: implement backward dataflow (use/def, IN/OUT)\n";
-      return PreservedAnalyses::all();
-    }
+      /**
+     * @brief Each set we need to generate for the pass
+     */
+      struct BlockState
+      {
+          BitVector in;
+          BitVector out;
+          BitVector use;
+          BitVector def;
+      };
+
+      /**
+       * @brief The meet function for a union of all the succs for function
+       *
+       * @param ins Bitvectors for all succs of this node
+       * @return BitVector
+       */
+      static BitVector meetUnion(const std::vector<BitVector>& ins)
+      {
+          // If its empty the bitwise or will yield nothing
+          if (ins.empty())
+              return {};
+          /* Start with first element and then or each bit with each bit in all other ins*/
+          BitVector out = ins[0];
+          for (size_t i = 1; i < ins.size(); ++i)
+              out |= ins[i];
+          return out;
+      }
+
+      PreservedAnalyses run(Function& F, FunctionAnalysisManager&)
+      {
+          outs() << "=== ";
+          F.printAsOperand(outs(), false);
+          outs() << " ===\n";
+          outs() << "[starter] liveness: implement backward dataflow (use/def, IN/OUT)\n";
+
+
+          /* Fills in the "universe" block with every operand in function */
+          std::vector<Value*> universe;
+          for (auto& BB : F)
+          {
+              for (auto& I : BB)
+              {
+                  if (!I.getType()->isVoidTy())
+                  {
+                      //if the values aren't constants add them to the vector
+                      if (!isa<ConstantInt>(I.getOperand(0)))
+                          universe.push_back(I.getOperand(0));
+                      if (!isa<ConstantInt>(I.getOperand(1)))
+                          universe.push_back(I.getOperand(1));
+                      universe.push_back(&I);
+                  }
+              }
+          }
+          /* Removes any duplicates from the list */
+          std::sort(universe.begin(), universe.end());
+          universe.erase(std::unique(universe.begin(), universe.end()), universe.end());
+
+          //Create a vector for backwards traversal through the tree
+          DenseMap<const BasicBlock*, BlockState> st;
+          std::vector<BasicBlock*> order;
+          order.push_back(&F.getEntryBlock());
+          for (size_t i = 0; i < order.size(); ++i)
+          {
+              for (BasicBlock* succ : successors(order[i]))
+              {
+                  if (std::find(order.begin(), order.end(), succ) == order.end())
+                      order.push_back(succ);
+              }
+          }
+
+          /* Creates bitvector with every bit set the size of the universe */
+          BitVector all(universe.size(), true);
+          for (BasicBlock* BB : order)
+          {
+              BlockState bs;
+              /* Default in: empty set */
+              bs.in = BitVector(universe.size(), false);
+              /* Default out: empty set */
+              bs.out = BitVector(universe.size(), false);
+              /* Default use: empty set */
+              bs.use = BitVector(universe.size(), false);
+              /* Default def: empty set */
+              bs.def = BitVector(universe.size(), false);
+
+              std::vector<Value*> useVec, defVec;
+
+              for (Instruction& I : *BB)
+              {
+                  if (!I.getType()->isVoidTy())
+                  {
+                      /* Gets value of left operator in the universe */
+                      {
+                          bool alreadyInDef = false;
+
+                          for (int i = 0; i < defVec.size(); i++)
+                          {
+                              if (defVec[i] == I.getOperand(0))
+                                  alreadyInDef = true;
+                          }
+                          if (!alreadyInDef)
+                              useVec.push_back(I.getOperand(0));
+                      }
+                      /* Gets value of right operator in the universe */
+                      {
+                          bool alreadyInDef = false;
+
+                          for (int i = 0; i < defVec.size(); i++)
+                          {
+                              if (defVec[i] == I.getOperand(1))
+                                  alreadyInDef = true;
+                          }
+                          if (!alreadyInDef)
+                              useVec.push_back(I.getOperand(1));
+                      }
+
+                      //if the instruction is a phi node, check the incoming values
+                      if (auto* P = dyn_cast<PHINode>(&I))
+                      {
+                          for (int i = 0; i < P->getNumIncomingValues(); i++)
+                          {
+                              bool alreadyInDef = false;
+
+                              for (int i = 0; i < defVec.size(); i++)
+                              {
+                                  if (defVec[i] == P->getIncomingValue(i))
+                                      alreadyInDef = true;
+                              }
+                              if (!alreadyInDef)
+                                  useVec.push_back(P->getIncomingValue(i));
+                          }
+                      }
+
+                      for (size_t i = 0; i < universe.size(); ++i)
+                      {
+                          // If the instruction defines a value add it to def
+                          if (universe[i] == &I)
+                              //bs.def.set(static_cast<unsigned>(i));
+                              defVec.push_back(&I);
+                      }
+
+                      for (Value* V : defVec)
+                      {
+                          auto it = std::find(universe.begin(), universe.end(), V);
+                          // Add to use if operator matches, isn't end, and isn't already in def
+                          if (it != universe.end())
+                          {
+                              bs.def.set(static_cast<unsigned>(it - universe.begin()));
+                          }
+                      }
+
+                      for (Value* V : useVec)
+                      {
+                          auto it = std::find(universe.begin(), universe.end(), V);
+                          // Add to use if operator matches, isn't end, and isn't already in def
+                          if (it != universe.end())
+                          {
+                              bs.use.set(static_cast<unsigned>(it - universe.begin()));
+                          }
+                      }
+                  }
+              }
+
+              st[BB] = bs;
+          }
+          /* Iterative section for finding in and out */
+          bool changed = true;
+          while (changed)
+          {
+              /* Fixed point check */
+              changed = false;
+              for (BasicBlock* BB : order)
+              {
+
+                  std::vector<BitVector> succIns;
+
+                  //for each successor of our BB, add it to our list of successors to check
+                  for (BasicBlock* succ : successors(BB))
+                      succIns.push_back(st[succ].in);
+                  //if our list of successors is empty, add an empty bitvector
+                  if (succIns.empty())
+                      succIns.push_back(BitVector(universe.size(), false));
+
+                  //set our out set to the union of all successors
+                  st[BB].out = meetUnion(succIns);
+
+                  //calculate our "new" in set with our meet function "use[BB] U (out[BB] - def[BB])"
+                  BitVector newIn = st[BB].out;
+                  newIn.reset(st[BB].def);
+                  newIn |= st[BB].use;
+
+                  //if we have not reached a fixed point, set changed to true to run the loop again
+                  if (newIn != st[BB].in)
+                  {
+                      st[BB].in = newIn;
+                      changed = true;
+                  }
+              }
+          }
+
+          /* Nice print for each basic block all the required fields */
+          for (BasicBlock* BB : order)
+          {
+              outs() << "BB: ";
+              BB->printAsOperand(outs(), false);
+              outs() << "\n";
+              printValueBitSet(outs(), "use", st[BB].use, universe);
+              printValueBitSet(outs(), "def", st[BB].def, universe);
+              printValueBitSet(outs(), "IN", st[BB].in, universe);
+              printValueBitSet(outs(), "OUT", st[BB].out, universe);
+          }
+
+          return PreservedAnalyses::all();
+      }
   };
 
   struct ReachingPass : PassInfoMixin<ReachingPass>
@@ -606,133 +794,18 @@ namespace
         if (!first)
           OS << "; ";
         first = false;
+        /* If value is null return null as string */
+        if (!V)
+            return "(null)";
+        /* If value has name update to str and add % */
+        if (V->hasName())
+            return "%" + V->getName().str();
+        /* If value is a constant interger return string of int */
+        if (const auto* C = dyn_cast<ConstantInt>(V))
+            return std::to_string(C->getSExtValue());
+        /* If all those scenarios fail just print to screen maybe ?*/
+        std::string S;
+        raw_string_ostream OS(S);
         V->printAsOperand(OS, false);
-        if (v.kind == Kind::Const)
-          OS << " = " << v.c;
-        else if (v.kind == Kind::Bottom)
-          OS << " = NAC";
-        else
-          OS << " = TOP";
-      }
-      OS << " }\n";
+        return S;
     }
-
-    PreservedAnalyses run(Function &F, FunctionAnalysisManager &)
-    {
-      outs() << "=== ";
-      F.printAsOperand(outs(), false);
-      outs() << " ===\n";
-
-      std::vector<const Value *> domain;
-      for (auto &BB : F)
-      {
-        for (auto &I : BB)
-        {
-          if (!I.getType()->isVoidTy())
-            domain.push_back(&I);
-        }
-      }
-
-      std::vector<BasicBlock *> order;
-      order.push_back(&F.getEntryBlock());
-      for (size_t i = 0; i < order.size(); ++i)
-      {
-        for (BasicBlock *succ : successors(order[i]))
-        {
-          if (std::find(order.begin(), order.end(), succ) == order.end())
-            order.push_back(succ);
-        }
-      }
-
-      DenseMap<const BasicBlock *, BlockState> st;
-      for (BasicBlock *BB : order)
-      {
-        BlockState bs;
-        for (const Value *V : domain)
-        {
-          bs.in[V] = LVal::top();
-          bs.out[V] = LVal::top();
-        }
-        st[BB] = std::move(bs);
-      }
-
-      bool changed = true;
-      while (changed)
-      {
-        changed = false;
-        for (BasicBlock *BB : order)
-        {
-          CPState newIn;
-          for (const Value *V : domain)
-            newIn[V] = LVal::top();
-
-          bool hasPred = false;
-          for (BasicBlock *pred : predecessors(BB))
-          {
-            hasPred = true;
-            for (const Value *V : domain)
-              newIn[V] = meetVal(newIn.lookup(V), st[pred].out.lookup(V));
-          }
-          if (!hasPred)
-          {
-            for (const Value *V : domain)
-              newIn[V] = LVal::top();
-          }
-
-          st[BB].in = newIn;
-          CPState newOut = transferBlock(*BB, newIn, st);
-          if (!sameState(st[BB].out, newOut, domain))
-          {
-            st[BB].out = std::move(newOut);
-            changed = true;
-          }
-        }
-      }
-
-      for (BasicBlock *BB : order)
-      {
-        outs() << "BB: ";
-        BB->printAsOperand(outs(), false);
-        outs() << "\n";
-        printState(outs(), "IN", st[BB].in, domain);
-        printState(outs(), "OUT", st[BB].out, domain);
-      }
-
-      return PreservedAnalyses::all();
-    }
-  };
-
-} // namespace
-
-extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo()
-{
-  return {LLVM_PLUGIN_API_VERSION, "UnifiedPass", "v0.3-starter", [](PassBuilder &PB)
-          {
-            PB.registerPipelineParsingCallback(
-                [](StringRef Name, FunctionPassManager &FPM,
-                   ArrayRef<PassBuilder::PipelineElement>) -> bool
-                {
-                  if (Name == "available")
-                  {
-                    FPM.addPass(AvailablePass());
-                    return true;
-                  }
-                  if (Name == "liveness")
-                  {
-                    FPM.addPass(LivenessPass());
-                    return true;
-                  }
-                  if (Name == "reaching")
-                  {
-                    FPM.addPass(ReachingPass());
-                    return true;
-                  }
-                  if (Name == "constantprop")
-                  {
-                    FPM.addPass(ConstantPropPass());
-                    return true;
-                  }
-                  return false;
-                });
-          }};
-}
