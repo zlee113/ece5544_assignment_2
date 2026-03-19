@@ -802,7 +802,13 @@ namespace
       // Starter example: only Add is implemented.
       // TODO(student): extend to Sub/Mul/Div and policy for unsupported ops.
       if (BO.getOpcode() == Instruction::Add)
-        return LVal::constant(l.c + r.c);
+          return LVal::constant(l.c + r.c);
+      else if (BO.getOpcode() == Instruction::Sub)
+          return LVal::constant(l.c - r.c);
+      else if (BO.getOpcode() == Instruction::Mul)
+          return LVal::constant(l.c * r.c);
+      else if (BO.getOpcode() == Instruction::SDiv)
+          return LVal::constant(l.c / r.c);
       return LVal::top();
     }
 
