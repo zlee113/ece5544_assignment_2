@@ -796,6 +796,8 @@ namespace
     {
       LVal l = evalValue(BO.getOperand(0), st);
       LVal r = evalValue(BO.getOperand(1), st);
+      if (l.kind == Kind::Bottom || r.kind == Kind::Bottom)
+        return LVal::bottom();
       if (l.kind != Kind::Const || r.kind != Kind::Const)
         return LVal::top();
 
