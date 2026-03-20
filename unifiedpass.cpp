@@ -802,13 +802,13 @@ namespace
       // Starter example: only Add is implemented.
       // TODO(student): extend to Sub/Mul/Div and policy for unsupported ops.
       if (BO.getOpcode() == Instruction::Add)
-          return LVal::constant(l.c + r.c);
+        return LVal::constant(l.c + r.c);
       else if (BO.getOpcode() == Instruction::Sub)
-          return LVal::constant(l.c - r.c);
+        return LVal::constant(l.c - r.c);
       else if (BO.getOpcode() == Instruction::Mul)
-          return LVal::constant(l.c * r.c);
+        return LVal::constant(l.c * r.c);
       else if (BO.getOpcode() == Instruction::SDiv)
-          return LVal::constant(l.c / r.c);
+        return LVal::constant(l.c / r.c);
       return LVal::top();
     }
 
@@ -821,10 +821,29 @@ namespace
      */
     static LVal evalPhi(const PHINode &Phi, const DenseMap<const BasicBlock *, BlockState> &states)
     {
-      (void)Phi;
-      (void)states;
       // TODO(student): merge incoming values from predecessor OUT states.
-      return LVal::top();
+      /* Get the number of incoming values to loop through */
+      unsigned int num_values = Phi.getNumIncomingValues();
+
+      /* Create return variable and default it to top */
+      LVal final_val = LVal::top();
+
+      /* Loop over the incoming values */
+      for (int i = 0; i < num_values; ++i)
+      {
+        /* Get incoming block */
+        BasicBlock *BB = Phi.getIncomingBlock(i);
+        /* Get the incoming values and convert to lval for comparison */
+        Value *val = Phi.getIncomingValue(i);
+        LVal converted_val = evalValue(val, states.find(BB)->second.out);
+        /* Get the meet for this new val and the final val*/
+        final_val = meetVal(final_val, converted_val);
+      }
+
+      /* If the variable is a loop variable it can cause an infinite loop if the values inherit from themselves so we need to meet with the last iterations value as well to amke sure we aren't flip flopping between iterations */
+      auto phi_state = states.find(Phi.getParent());
+      final_val = meetVal(final_val, evalValue(&Phi, phi_state->second.out));
+      return final_val;
     }
 
     /**
