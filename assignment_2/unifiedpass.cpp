@@ -895,7 +895,7 @@ namespace
     }
 
     static void printState(raw_ostream &OS, StringRef label, const CPState &st,
-                           const std::vector<const Value *> &domain, bool showTop = false)
+                           const std::vector<const Value *> &domain, bool showTop = true)
     {
       OS << "  " << label << ": { ";
       bool first = true;
