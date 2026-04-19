@@ -12,6 +12,10 @@ OPTIMIZER_LIBS    = $(OPTIMIZER_SOURCES:%.cpp=$(BUILDDIR)/%.so)
 DOM_TESTS    = $(wildcard tests/*-dom.bc)
 DOM_OUTS     = $(DOM_TESTS:tests/%.bc=$(BUILDDIR)/tests/%-opt.ll)
 
+# finds all *-licm.bc files in tests/
+LICM_TESTS    = $(wildcard tests/*-licm.bc)
+LICM_OUTS     = $(LICM_TESTS:tests/%.bc=$(BUILDDIR)/tests/%-opt.ll)
+
 DEPFILES     = $(OPTIMIZER_SOURCES:%.cpp=$(DEPDIR)/%.d)
 
 .PHONY: all clean tests
@@ -19,7 +23,7 @@ DEPFILES     = $(OPTIMIZER_SOURCES:%.cpp=$(DEPDIR)/%.d)
 
 all: $(OPTIMIZER_LIBS)
 
-tests: $(DOM_OUTS)
+tests: $(DOM_OUTS)  | $(LICM_OUTS)
 
 clean:
 	rm -rf $(BUILDDIR)
@@ -29,9 +33,12 @@ $(BUILDDIR)/%.o: %.cpp $(DEPDIR)/%.d | $(DEPDIR) $(BUILDDIR)
 
 $(BUILDDIR)/%.so: $(BUILDDIR)/%.o
 	$(CXX) -shared $^ -o $@ $(LDFLAGS)
-
+	
 $(BUILDDIR)/tests/%-dom-opt.ll: tests/%-dom.bc $(OPTIMIZER_LIBS) | $(BUILDDIR)/tests
 	opt -bugpoint-enable-legacy-pm=1 $(OPTIMIZER_LIBS:%=-load-pass-plugin=%) -passes='dominators' $< -o $@
+
+$(BUILDDIR)/tests/%-dom-opt.ll: tests/%-licm.bc $(OPTIMIZER_LIBS) | $(BUILDDIR)/tests
+	opt -bugpoint-enable-legacy-pm=1 $(OPTIMIZER_LIBS:%=-load-pass-plugin=%) -passes='licm' $< -o $@
 
 $(BUILDDIR)/tests/%-opt.ll: $(BUILDDIR)/tests/%-opt.bc
 	llvm-dis $< -o $@

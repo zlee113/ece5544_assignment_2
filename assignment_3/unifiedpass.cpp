@@ -20,6 +20,7 @@
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Passes/PassPlugin.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Analysis/LoopInfo.h>
 
 using namespace llvm;
 
@@ -185,8 +186,93 @@ namespace
     }
   };
 
-} // namespace
+  struct licm : PassInfoMixin<licm>
+  {
+      /**
+       * @brief Each set we need to generate for the pass
+       */
+      struct BlockState
+      {
+          std::vector<BitVector> in;
+          std::vector<BitVector> out;
+      };
 
+      /**
+       * @brief The meet function for a union of all the succs for function
+       *
+       * @param ins Bitvectors for all succs of this node
+       * @param type Type of meet, 1 for union, 2 for intersection
+       * @return BitVector
+       */
+      static BitVector meet(const std::vector<BitVector>& ins, uint8_t type)
+      {
+          // If its empty the bitwise or will yield nothing
+          if (ins.empty())
+              return {};
+          /* Start with first element and then for each bit with each bit in all other ins*/
+          BitVector out = ins[0];
+          for (size_t i = 1; i < ins.size(); ++i)
+          {
+              /* Union */
+              if (type == 1)
+              {
+                  out |= ins[i];
+              }
+              else if (type == 2)
+              {
+                  out &= ins[i];
+              }
+          }
+
+          return out;
+      }
+
+      PreservedAnalyses run(Function& F, FunctionAnalysisManager&)
+      {
+          outs() << "PASS RUNNING ON: " << F.getName() << "\n";
+          /* Fills in the "universe" block with every basic block in function */
+          std::vector<BasicBlock*> universe;
+          for (auto& BB : F)
+          {
+              universe.push_back(&BB);
+          }
+
+          /* Setup initial block state */
+          BlockState bs;
+          for (int i = 0; i < universe.size(); i++)
+          {
+              /* Setup entry */
+              if (i == 0)
+              {
+                  BitVector entry(universe.size(), false);
+                  entry.set(0);
+                  bs.out.push_back(entry);
+              }
+              /* If not entry should be top */
+              else
+              {
+                  bs.out.push_back(BitVector(universe.size(), true));
+              }
+          }
+
+          //Step 1: Find the loops. Create a bool for if a nested loop is found, telling the code to recheck loop bodies for potential further bubbling
+          //llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>* KLoop = new llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>();
+          outs() << "KLoop" << "\n";
+
+          /*Step 2: Place two empty basic blocks BETWEEN the loop preheader and the loop header
+          the upper block should be an unconditional landing block where all INVARIANT instructions go
+          the lower block should be a conditional block that replicates the branch condition of the original loop header
+          make sure to edit the CFG and provide a path from the conditional block to the loop exit
+          make sure the loop is executed AT LEAST once*/
+          //Step 3: Run a dominators and reaching definitions pass to see if an instruction can be safely moved outside the loop
+          //Step 4: If the instruction can be moved, move it to the new unconditional block. Otherwise, move it to the new conditional block
+
+
+
+          return PreservedAnalyses::all();
+      }
+  };
+} // namespace
 extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo()
 {
   return {LLVM_PLUGIN_API_VERSION, "UnifiedPass", "v0.3-starter", [](PassBuilder &PB)
@@ -199,6 +285,11 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo()
                   {
                     FPM.addPass(dominators());
                     return true;
+                  }
+                  else if (Name == "licm")
+                  {
+                      FPM.addPass(licm());
+                      return true;
                   }
                   return false;
                 });
