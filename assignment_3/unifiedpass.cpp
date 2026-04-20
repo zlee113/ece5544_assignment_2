@@ -575,7 +575,7 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo()
                 FPM.addPass(dead_code_elimination());
                 return true;
               }
-              else if (Name == "loop_invariant_code_motion")
+              else if (Name == "loop-invariant-code-motion")
               {
                 FPM.addPass(loop_invariant_code_motion());
                 return true;

@@ -42,7 +42,7 @@ $(BUILDDIR)/tests/%-dce-opt.ll: tests/%-dce.bc $(OPTIMIZER_LIBS) | $(BUILDDIR)/t
 	opt -bugpoint-enable-legacy-pm=1 $(OPTIMIZER_LIBS:%=-load-pass-plugin=%) -passes='dead-code-elimination' $< -o $@
 
 $(BUILDDIR)/tests/%-loop_invariant_code_motion-opt.ll: tests/%-loop_invariant_code_motion.bc $(OPTIMIZER_LIBS) | $(BUILDDIR)/tests
-	opt -bugpoint-enable-legacy-pm=1 $(OPTIMIZER_LIBS:%=-load-pass-plugin=%) -passes='loop_invariant_code_motion' $< -o $@
+	opt -bugpoint-enable-legacy-pm=1 $(OPTIMIZER_LIBS:%=-load-pass-plugin=%) -passes='loop-invariant-code-motion' $< -o $@
 
 $(BUILDDIR)/tests/%-opt.ll: $(BUILDDIR)/tests/%-opt.bc
 	llvm-dis $< -o $@
