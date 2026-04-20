@@ -207,17 +207,6 @@ namespace
   struct dead_code_elimination : PassInfoMixin<dead_code_elimination>
   {
     /**
-     * @brief Each set we need to generate for the pass
-     */
-    struct BlockState
-    {
-      BitVector in;
-      BitVector out;
-      BitVector gen;
-      BitVector kill;
-      BitVector use;
-    };
-    /**
      * @brief IsLive instruction
      *
      * @param I
@@ -242,16 +231,10 @@ namespace
       {
         for (auto &I : BB)
         {
-          if (!I.getType()->isVoidTy())
-          {
-            // if the values aren't constants add them to the vector
-            for (Use &U : I.operands())
-            {
-              if (!isa<Constant>(U.get()) && !(U.get()->getType()->isPointerTy()) && !U.get()->getType()->isVoidTy())
-                universe.push_back(U.get());
-            }
-          }
-          if (!(I.getType()->isPointerTy()) && !(I.getType()->isVoidTy()))
+          /* Add instructions to the universe if they have a value */
+          if (!I.getType()->isVoidTy() &&
+              !I.getType()->isPointerTy() &&
+              !isLive(&I))
           {
             universe.push_back(&I);
           }
@@ -260,16 +243,7 @@ namespace
       /* Removes any duplicates from the list */
       std::sort(universe.begin(), universe.end());
       universe.erase(std::unique(universe.begin(), universe.end()), universe.end());
-      for (int i = 0; i < universe.size(); i++)
-      {
-        outs() << i << ": ";
-        universe[i]->printAsOperand(outs(), false);
-        outs() << " type: ";
-        universe[i]->getType()->print(outs());
-        outs() << "\n";
-      }
       // Create a vector for backwards traversal through the tree
-      DenseMap<const BasicBlock *, BlockState> st;
       std::vector<BasicBlock *> order;
       order.push_back(&F.getEntryBlock());
       for (size_t i = 0; i < order.size(); ++i)
@@ -280,30 +254,52 @@ namespace
             order.push_back(succ);
         }
       }
-      /* Now flip the order so its reversed*/
-      std::reverse(order.begin(), order.end());
 
       /* Creates bitvector with every bit set the size of the universe */
       BitVector all(universe.size(), true);
+      std::vector<BasicBlock *> worklist;
+      DenseMap<BasicBlock *, BitVector> in;
+      DenseMap<Instruction *, BitVector> out;
       for (BasicBlock *BB : order)
       {
-        BlockState bs;
         /* Default in: full set */
-        bs.in = BitVector(universe.size(), false);
+        in[BB] = BitVector(universe.size(), true);
         /* Default out: full set */
-        bs.out = BitVector(universe.size(), true);
-        /* Default gen: empty set */
-        bs.gen = BitVector(universe.size(), false);
-        /* Default kill: empty set */
-        bs.kill = BitVector(universe.size(), false);
-        /* Default use: empty set */
-        bs.use = BitVector(universe.size(), false);
-
-        /* Creating the gen and use sets since their static */
         for (Instruction &I : *BB)
         {
-          /* Make sure instruction isn't void type */
-          if (!I.getType()->isVoidTy())
+          out[&I] = BitVector(universe.size(), true);
+        }
+
+        /* Add the exit block to the list the rest will be added at the loop */
+        if (succ_begin(BB) == succ_end(BB))
+          worklist.push_back(BB);
+      }
+
+      /* Worklist loop, ending only when empty */
+      while (!worklist.empty())
+      {
+        /* Get last block in the worklist */
+        BasicBlock *B = worklist.back();
+        worklist.pop_back();
+
+        /* Meet operation for intersection */
+        std::vector<BitVector> succIns;
+        for (BasicBlock *succ : successors(B))
+          succIns.push_back(in[succ]);
+        // if our list of successors is empty, add an empty bitvector
+        if (succIns.empty())
+          succIns.push_back(BitVector(universe.size(), true));
+        BitVector x = meet(succIns, 2);
+
+        /* Instruction level transfer function */
+        for (auto it = B->rbegin(); it != B->rend(); ++it)
+        {
+          Instruction &I = *it;
+          out[&I] = x;
+
+          /* Calc gen set */
+          BitVector gen(universe.size(), false);
+          if (!I.getType()->isVoidTy() && !I.getType()->isPointerTy())
           {
             /* Grab the left hand side (just the instruction)*/
             Value *LHS = &I;
@@ -326,13 +322,16 @@ namespace
               {
                 int index = std::distance(universe.begin(), it);
                 /* Set the bit */
-                bs.gen.set(index);
+                gen.set(index);
               }
             }
           }
-          else
+
+          /* Calc kill set */
+          BitVector const_kill = BitVector(universe.size(), false);
+          /* Get all the RHS operands */
+          if (I.getType()->isVoidTy() || I.isTerminator())
           {
-            /* Get all the RHS operands */
             for (Use &U : I.operands())
             {
               /* Make sure they aren't constant values */
@@ -340,122 +339,109 @@ namespace
               {
                 /* Find where it is in the universe */
                 auto it = std::find(universe.begin(), universe.end(), U.get());
-                /* Get the distance from the start for index */
                 if (it != universe.end())
                 {
+                  /* Get the distance from the start for index */
                   int index = std::distance(universe.begin(), it);
                   /* Set the bit */
-                  bs.use.set(index);
+                  const_kill.set(index);
                 }
               }
             }
           }
-        }
-        /* Update the block state for each basic block */
-        st[BB] = bs;
-      }
-      /* Iterative section for finding in, out, and kill */
-      bool changed = true;
-      while (changed)
-      {
-        /* Fixed point check */
-        changed = false;
-        for (BasicBlock *BB : order)
-        {
-          /* Reset the kill for this block (updated cleanly each iteration) */
-          st[BB].kill.reset();
-          /* Loop through instructions */
-          for (Instruction &I : *BB)
+          BitVector dep_kill = BitVector(universe.size(), false);
+          /* Make sure instruction isn't void type */
+          if (!I.getType()->isVoidTy())
           {
-            /* Make sure instruction isn't void type */
-            if (!I.getType()->isVoidTy())
+            /* Grab the left hand side (just the instruction)*/
+            Value *LHS = &I;
+            /* Find where it is in the universe */
+            auto it = std::find(universe.begin(), universe.end(), LHS);
+            /* Get the distance from the start for index */
+            if (it != universe.end())
             {
-              /* Grab the left hand side (just the instruction)*/
-              Value *LHS = &I;
-              /* Find where it is in the universe */
-              auto it = std::find(universe.begin(), universe.end(), LHS);
-              /* Get the distance from the start for index */
-              if (it != universe.end())
+              int index = std::distance(universe.begin(), it);
+              /* Check if the bit is set in the out for this block */
+              if (!x.test(index))
               {
-                int index = std::distance(universe.begin(), it);
-                /* Check if the bit is set in the out for this block */
-                if (!st[BB].out.test(index))
+                /* Get all the RHS operands */
+                for (Use &U : I.operands())
                 {
-                  /* Get all the RHS operands */
-                  for (Use &U : I.operands())
+                  /* Make sure they aren't constant values */
+                  if (!isa<ConstantInt>(U.get()))
                   {
-                    /* Make sure they aren't constant values */
-                    if (!isa<ConstantInt>(U.get()))
+                    /* Find where it is in the universe */
+                    it = std::find(universe.begin(), universe.end(), U.get());
+                    if (it != universe.end())
                     {
-                      /* Find where it is in the universe */
-                      if (it != universe.end())
-                      {
-                        auto it = std::find(universe.begin(), universe.end(), U.get());
-
-                        /* Get the distance from the start for index */
-                        int index = std::distance(universe.begin(), it);
-                        /* Set the bit */
-                        st[BB].kill.set(index);
-                      }
+                      /* Get the distance from the start for index */
+                      int index = std::distance(universe.begin(), it);
+                      /* Set the bit */
+                      dep_kill.set(index);
                     }
                   }
                 }
               }
             }
           }
-          /* Finish kill set by union with use set */
-          st[BB].kill |= st[BB].use;
+          /* Union the two kills */
+          BitVector kill = const_kill;
+          kill |= dep_kill;
 
+          /* Get the next x value */
           /* FaintIn = (FaintOut - FaintKill) U FaintGen */
-          BitVector new_in = st[BB].out;
-          new_in.reset(st[BB].kill);
-          new_in |= st[BB].gen;
-          /* FaintOut is the intersection of all the successors */
-          std::vector<BitVector> succIns;
-          for (BasicBlock *succ : successors(BB))
-            succIns.push_back(st[succ].in);
-          // if our list of successors is empty, add an empty bitvector
-          if (succIns.empty())
-            succIns.push_back(BitVector(universe.size(), true));
+          BitVector new_x = x;
+          new_x.reset(kill);
+          new_x |= gen;
+          x = new_x;
+        }
 
-          // set our out set to the intersection of all successors
-          BitVector new_out = meet(succIns, 2);
-          /* Change if the in or out are different */
-          if (BB->getName().contains("12") || BB->getName().empty())
+        /* Check the values for in */
+        BitVector new_in = x;
+        if (new_in != in[B])
+        {
+          in[B] = new_in;
+          for (BasicBlock *pred : predecessors(B))
           {
-            outs() << "BLOCK: ";
-            BB->printAsOperand(outs(), false);
-            outs() << "\n";
-            printValueBitSet(outs(), "out", st[BB].out, universe);
-            printValueBitSet(outs(), "kill", st[BB].kill, universe);
-            printValueBitSet(outs(), "gen", st[BB].gen, universe);
-            printValueBitSet(outs(), "new_in", new_in, universe);
-            printValueBitSet(outs(), "new_out", new_out, universe);
-            outs() << "changed: " << changed << "\n";
-          }
-          if (new_in != st[BB].in || new_out != st[BB].out)
-          {
-            /* If either is replace both and report changed as true again */
-            st[BB].in = new_in;
-            st[BB].out = new_out;
-            changed = true;
+            if (std::find(worklist.begin(), worklist.end(), pred) == worklist.end())
+            {
+              worklist.push_back(pred);
+            }
           }
         }
       }
 
-      /* Nice print for each basic block all the required fields */
+      /* Get the instructions we want to delete */
+      std::vector<Instruction *> instr_to_delete;
       for (BasicBlock *BB : order)
       {
-        outs() << "BB: ";
-        BB->printAsOperand(outs(), false);
-        outs() << "\n";
-        printValueBitSet(outs(), "use", st[BB].use, universe);
-        printValueBitSet(outs(), "gen", st[BB].gen, universe);
-        printValueBitSet(outs(), "kill", st[BB].kill, universe);
-        printValueBitSet(outs(), "IN", st[BB].in, universe);
-        printValueBitSet(outs(), "OUT", st[BB].out, universe);
+        for (Instruction &I : *BB)
+        {
+          /* Make sure the instruction isn't live or one we don't want to delete */
+          if (!isLive(&I) && !I.getType()->isVoidTy() && !I.getType()->isPointerTy())
+          {
+            auto it = std::find(universe.begin(), universe.end(), &I);
+            if (it != universe.end())
+            {
+              /* Grab the index and test it */
+              int index = std::distance(universe.begin(), it);
+              if (out[&I].test(index))
+              {
+                outs() << "Removing Instruction ";
+                I.print(outs());
+                outs() << "\n";
+                instr_to_delete.push_back(&I);
+              }
+            }
+          }
+        }
       }
 
+      /* Loop through the vector we made and delete all the instructions */
+      for (Instruction *I : instr_to_delete)
+      {
+        I->eraseFromParent();
+      }
       return PreservedAnalyses::all();
     }
   };
