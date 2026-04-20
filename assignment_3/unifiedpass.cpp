@@ -17,9 +17,14 @@
 #include <llvm/IR/Instruction.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/PassManager.h>
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Dominators.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Passes/PassPlugin.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Support/GenericLoopInfo.h>
+#include <llvm/Analysis/LoopInfo.h>
+#include <llvm/Analysis/ValueTracking.h>
 
 using namespace llvm;
 
@@ -446,27 +451,136 @@ namespace
     }
   };
 
-} // namespace
+  struct loop_invariant_code_motion : PassInfoMixin<loop_invariant_code_motion>
+  {
+    bool isInvariant(Instruction *I, Loop *L, DominatorTree *DT)
+    {
+      bool invariant = true;
+      std::vector<BasicBlock *> BB = L->getBlocksVector();
+      for (auto &B : BB)
+      {
+        if (isSafeToSpeculativelyExecute(I) && !I->mayReadFromMemory() && !isa<LandingPadInst>(I) && ReachingPass(I, L) && DT->dominates(I, B))
+          return false;
+      }
+      return true;
+    }
 
+    bool ReachingPass(Instruction *I, Loop *L)
+    {
+      bool reaches = true;
+      std::vector<BasicBlock *> BB = L->getBlocksVector();
+      for (auto &B : BB)
+      {
+        for (auto &it : *B)
+        {
+          if (&it == I)
+            return reaches;
+          else
+          {
+            if (!I->getType()->isVoidTy())
+            {
+              if (I->getNumOperands() == 2)
+              {
+                Value *V = cast<Value>(I);
+                if (V == it.getOperand(0))
+                  reaches = false;
+              }
+              else if (I->getNumOperands() == 3)
+              {
+                Value *V = cast<Value>(I);
+                if (V == it.getOperand(0) || V == it.getOperand(1))
+                  reaches = false;
+              }
+            }
+          }
+        }
+      }
+      return reaches;
+    }
+
+    PreservedAnalyses run(Function &F, FunctionAnalysisManager &)
+    {
+      outs() << "PASS RUNNING ON: " << F.getName() << "\n";
+
+      // Step 1: Find the loops. Create a bool for if a nested loop is found, telling the code to recheck loop bodies for potential further bubbling
+      llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop> *KLoop = new llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>();
+      llvm::DominatorTree *DT = new llvm::DominatorTree(F);
+      KLoop->analyze(*DT);
+      KLoop->print(outs());
+      outs() << "\n";
+
+      for (std::vector<Loop *>::const_iterator it = KLoop->begin(); it != KLoop->end(); ++it)
+      {
+        if (((Loop *)*it)->getLoopPreheader() != NULL)
+        {
+          /*Step 2: Place two empty basic blocks BETWEEN the loop preheader and the loop header
+          the upper block should be an unconditional landing block where all INVARIANT instructions go
+          the lower block should be a conditional block that replicates the branch condition of the original loop header
+          make sure to edit the CFG and provide a path from the conditional block to the loop exit
+          make sure the loop is executed AT LEAST once*/
+          BasicBlock *uncondBlock = BasicBlock::Create(F.getContext(), "uncondLandingPlatform", &F);
+          IRBuilder<> uncondBuilder(uncondBlock);
+          uncondBuilder.SetInsertPoint(uncondBlock);
+          BranchInst *uncondEnd = uncondBuilder.CreateBr(uncondBlock);
+          BasicBlock *condBlock = BasicBlock::Create(F.getContext(), "condLandingPlatform", &F);
+          IRBuilder<> condBuilder(condBlock);
+          condBuilder.SetInsertPoint(condBlock);
+          BranchInst *condEnd = condBuilder.CreateBr(condBlock);
+
+          std::vector<BasicBlock *> BB = ((Loop *)*it)->getBlocksVector();
+          for (auto &B : BB)
+          {
+            for (auto &I : *B)
+            {
+              // Step 3: Run a dominators and reaching definitions pass to see if an instruction can be safely moved outside the loop
+              if (isInvariant(&I, ((Loop *)*it), new llvm::DominatorTree(F)))
+              {
+                outs() << "progress \n";
+                // Step 4: If the instruction can be moved, move it to the new unconditional block. Otherwise, move it to the new conditional block
+                // Instruction* newInst = I.clone();
+                // newInst->insertBefore(uncondBlock->end()->getPrevNode());
+                // I.removeFromParent();
+              }
+              else
+              {
+                // Instruction* newInst = I.clone();
+                // newInst->insertBefore(condBlock->end()->getPrevNode());
+                // I.removeFromParent();
+              }
+            }
+          }
+        }
+      }
+
+      return PreservedAnalyses::all();
+    }
+  };
+} // namespace
 extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo()
 {
-  return {LLVM_PLUGIN_API_VERSION, "UnifiedPass", "v0.3-starter", [](PassBuilder &PB)
-          {
-            PB.registerPipelineParsingCallback(
-                [](StringRef Name, FunctionPassManager &FPM,
-                   ArrayRef<PassBuilder::PipelineElement>) -> bool
-                {
-                  if (Name == "dominators")
-                  {
-                    FPM.addPass(dominators());
-                    return true;
-                  }
-                  else if (Name == "dead-code-elimination")
-                  {
-                    FPM.addPass(dead_code_elimination());
-                    return true;
-                  }
-                  return false;
-                });
-          }};
+  return {
+      LLVM_PLUGIN_API_VERSION, "UnifiedPass", "v0.3-starter", [](PassBuilder &PB)
+      {
+        PB.registerPipelineParsingCallback(
+            [](StringRef Name, FunctionPassManager &FPM,
+               ArrayRef<PassBuilder::PipelineElement>) -> bool
+            {
+              if (Name == "dominators")
+              {
+                FPM.addPass(dominators());
+                return true;
+              }
+              else if (Name == "dead-code-elimination")
+              {
+                FPM.addPass(dead_code_elimination());
+                return true;
+              }
+              else if (Name == "loop_invariant_code_motion")
+              {
+                FPM.addPass(loop_invariant_code_motion());
+                return true;
+              }
+              return false;
+            });
+      }};
 }
