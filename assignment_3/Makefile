@@ -12,9 +12,9 @@ OPTIMIZER_LIBS    = $(OPTIMIZER_SOURCES:%.cpp=$(BUILDDIR)/%.so)
 DOM_TESTS    = $(wildcard tests/*-dom.bc)
 DOM_OUTS     = $(DOM_TESTS:tests/%.bc=$(BUILDDIR)/tests/%-opt.ll)
 
-# finds all *-licm.bc files in tests/
-LICM_TESTS    = $(wildcard tests/*-licm.bc)
-LICM_OUTS     = $(LICM_TESTS:tests/%.bc=$(BUILDDIR)/tests/%-opt.ll)
+# finds all *-loop_invariant_code_motion.bc files in tests/
+loop_invariant_code_motion_TESTS    = $(wildcard tests/*-loop_invariant_code_motion.bc)
+loop_invariant_code_motion_OUTS     = $(loop_invariant_code_motion_TESTS:tests/%.bc=$(BUILDDIR)/tests/%-opt.ll)
 
 DEPFILES     = $(OPTIMIZER_SOURCES:%.cpp=$(DEPDIR)/%.d)
 
@@ -23,7 +23,7 @@ DEPFILES     = $(OPTIMIZER_SOURCES:%.cpp=$(DEPDIR)/%.d)
 
 all: $(OPTIMIZER_LIBS)
 
-tests: $(DOM_OUTS)  | $(LICM_OUTS)
+tests: $(DOM_OUTS)  | $(loop_invariant_code_motion_OUTS)
 
 clean:
 	rm -rf $(BUILDDIR)
@@ -37,8 +37,8 @@ $(BUILDDIR)/%.so: $(BUILDDIR)/%.o
 $(BUILDDIR)/tests/%-dom-opt.ll: tests/%-dom.bc $(OPTIMIZER_LIBS) | $(BUILDDIR)/tests
 	opt -bugpoint-enable-legacy-pm=1 $(OPTIMIZER_LIBS:%=-load-pass-plugin=%) -passes='dominators' $< -o $@
 
-$(BUILDDIR)/tests/%-dom-opt.ll: tests/%-licm.bc $(OPTIMIZER_LIBS) | $(BUILDDIR)/tests
-	opt -bugpoint-enable-legacy-pm=1 $(OPTIMIZER_LIBS:%=-load-pass-plugin=%) -passes='licm' $< -o $@
+$(BUILDDIR)/tests/%-loop_invariant_code_motion-opt.ll: tests/%-loop_invariant_code_motion.bc $(OPTIMIZER_LIBS) | $(BUILDDIR)/tests
+	opt -bugpoint-enable-legacy-pm=1 $(OPTIMIZER_LIBS:%=-load-pass-plugin=%) -passes='loop_invariant_code_motion' $< -o $@
 
 $(BUILDDIR)/tests/%-opt.ll: $(BUILDDIR)/tests/%-opt.bc
 	llvm-dis $< -o $@

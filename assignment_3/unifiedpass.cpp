@@ -17,10 +17,13 @@
 #include <llvm/IR/Instruction.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/PassManager.h>
+#include "llvm/IR/IRBuilder.h"
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Passes/PassPlugin.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Support/GenericLoopInfo.h>
 #include <llvm/Analysis/LoopInfo.h>
+#include <llvm/IR/Dominators.h>
 
 using namespace llvm;
 
@@ -186,7 +189,7 @@ namespace
     }
   };
 
-  struct licm : PassInfoMixin<licm>
+  struct loop_invariant_code_motion : PassInfoMixin<loop_invariant_code_motion>
   {
       /**
        * @brief Each set we need to generate for the pass
@@ -256,14 +259,33 @@ namespace
           }
 
           //Step 1: Find the loops. Create a bool for if a nested loop is found, telling the code to recheck loop bodies for potential further bubbling
-          //llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>* KLoop = new llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>();
-          outs() << "KLoop" << "\n";
+          llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>* KLoop = new llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>();
+          llvm::DominatorTree* DT = new llvm::DominatorTree(F);
+          KLoop->analyze(*DT);
+          KLoop->print(outs());
+          outs() << "\n";
 
-          /*Step 2: Place two empty basic blocks BETWEEN the loop preheader and the loop header
-          the upper block should be an unconditional landing block where all INVARIANT instructions go
-          the lower block should be a conditional block that replicates the branch condition of the original loop header
-          make sure to edit the CFG and provide a path from the conditional block to the loop exit
-          make sure the loop is executed AT LEAST once*/
+          for (std::vector<Loop*>::const_iterator it = KLoop->begin(); it != KLoop->end(); ++it)
+          {
+              if (((Loop*) *it)->getLoopPreheader() != NULL)
+              {
+                  /*Step 2: Place two empty basic blocks BETWEEN the loop preheader and the loop header
+                  the upper block should be an unconditional landing block where all INVARIANT instructions go
+                  the lower block should be a conditional block that replicates the branch condition of the original loop header
+                  make sure to edit the CFG and provide a path from the conditional block to the loop exit
+                  make sure the loop is executed AT LEAST once*/
+                  BasicBlock* uncondBlock = BasicBlock::Create(F.getContext(), "uncondLandingPlatform", &F);
+                  IRBuilder<> uncondBuilder(uncondBlock);
+                  uncondBuilder.SetInsertPoint(uncondBlock);
+                  BranchInst* uncondEnd = uncondBuilder.CreateBr(uncondBlock);
+                  BasicBlock* condBlock = BasicBlock::Create(F.getContext(), "condLandingPlatform", &F);
+                  IRBuilder<> condBuilder(condBlock);
+                  condBuilder.SetInsertPoint(condBlock);
+                  BranchInst* condEnd = condBuilder.CreateBr(condBlock);
+                  outs() << "progress \n";
+              }
+          }
+
           //Step 3: Run a dominators and reaching definitions pass to see if an instruction can be safely moved outside the loop
           //Step 4: If the instruction can be moved, move it to the new unconditional block. Otherwise, move it to the new conditional block
 
@@ -286,9 +308,9 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo()
                     FPM.addPass(dominators());
                     return true;
                   }
-                  else if (Name == "licm")
+                  else if (Name == "loop_invariant_code_motion")
                   {
-                      FPM.addPass(licm());
+                      FPM.addPass(loop_invariant_code_motion());
                       return true;
                   }
                   return false;
