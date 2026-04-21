@@ -92,117 +92,168 @@ namespace
     return out;
   }
 
+  /**
+   * @brief Struct to hold the information for a loops dominators info
+   */
+  struct loop_dom
+  {
+    std::vector<BasicBlock *> universe;
+    std::vector<BitVector> out;
+  };
+
+  loop_dom get_loop_dominators(Loop *L)
+  {
+    Function *F = L->getHeader()->getParent();
+    /* Fills in the "universe" block with every basic block in function */
+    std::vector<BasicBlock *> universe;
+    std::vector<BitVector> out;
+    for (BasicBlock &BB : *F)
+    {
+      universe.push_back(&BB);
+    }
+
+    /* Setup initial block state */
+    for (int i = 0; i < universe.size(); i++)
+    {
+      /* Setup entry */
+      if (i == 0)
+      {
+        BitVector entry(universe.size(), false);
+        entry.set(0);
+        out.push_back(entry);
+      }
+      /* If not entry should be top */
+      else
+      {
+        out.push_back(BitVector(universe.size(), true));
+      }
+    }
+
+    /* Find Dominators */
+    bool changed = true;
+    while (changed)
+    {
+      changed = false;
+      for (int i = 0; i < universe.size(); i++)
+      {
+        /* Get all the ins for this block to put through the meet function */
+        std::vector<BitVector> ins;
+        for (auto *pred : predecessors(universe[i]))
+        {
+          /* We need to find the element of the pred to add it to ins properly */
+          auto it = std::find(universe.begin(), universe.end(), pred);
+          int index = std::distance(universe.begin(), it);
+          /* Add it to ins */
+          ins.push_back(out[index]);
+        }
+        /* Get the new out but make sure it has preds first */
+        BitVector new_out;
+        if (ins.empty())
+        {
+          new_out = out[i];
+        }
+        else
+        {
+          /* Get the new out meet of the preds for this block (intersection)*/
+          new_out = meet(ins, 2);
+          /* Union that new out with the current blocks value */
+          new_out.set(i);
+        }
+
+        /* Check new out vs old and set the out for this basic block to the new out */
+        if (new_out != out[i])
+        {
+          changed = true;
+          out[i] = new_out;
+        }
+      }
+    }
+    loop_dom ld;
+    ld.universe = universe;
+    ld.out = out;
+    return ld;
+  }
+
+  /**
+   * @brief checks if block x dominates block y
+   *
+   * @param doms the loop_dom struct for this loop
+   * @param x the value we want to see holds dominion over y
+   * @param y the value we want to see if is dominated by x
+   * @return true If it doesn't dominate
+   * @return false if it doesn't dominate or isn't in the universe
+   */
+  bool check_if_dominates(loop_dom *doms,
+                          BasicBlock *x,
+                          BasicBlock *y)
+  {
+    /* Find the index of x in the universe*/
+    auto itx = std::find(doms->universe.begin(), doms->universe.end(), x);
+    if (itx == doms->universe.end())
+      return false;
+
+    /* Find the index of y in the universe */
+    auto ity = std::find(doms->universe.begin(), doms->universe.end(), y);
+    if (ity == doms->universe.end())
+      return false;
+
+    int index_x = std::distance(doms->universe.begin(), itx);
+    int index_y = std::distance(doms->universe.begin(), ity);
+
+    /* x dominates y if the bit is set for x in the out for y */
+    return doms->out[index_y].test(index_x);
+  }
+
   // -------------------- Dominators Pass --------------------
   /**
    * @brief Functionpass for dominators
    */
   struct dominators : PassInfoMixin<dominators>
   {
-    /**
-     * @brief Each set we need to generate for the pass
-     */
-    struct BlockState
-    {
-      std::vector<BitVector> in;
-      std::vector<BitVector> out;
-    };
 
-    PreservedAnalyses run(Function &F, FunctionAnalysisManager &)
+    PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM)
     {
       outs() << "=== ";
       F.printAsOperand(outs(), false);
       outs() << " ===\n";
-      /* Fills in the "universe" block with every basic block in function */
-      std::vector<BasicBlock *> universe;
-      for (auto &BB : F)
-      {
-        universe.push_back(&BB);
-      }
 
-      /* Setup initial block state */
-      BlockState bs;
-      for (int i = 0; i < universe.size(); i++)
+      /* Get the loop info for the block */
+      LoopInfo &LI = FAM.getResult<LoopAnalysis>(F);
+      for (Loop *L : LI)
       {
-        /* Setup entry */
-        if (i == 0)
-        {
-          BitVector entry(universe.size(), false);
-          entry.set(0);
-          bs.out.push_back(entry);
-        }
-        /* If not entry should be top */
-        else
-        {
-          bs.out.push_back(BitVector(universe.size(), true));
-        }
-      }
+        loop_dom loop_results = get_loop_dominators(L);
 
-      /* Find Dominators */
-      bool changed = true;
-      while (changed)
-      {
-        changed = false;
-        for (int i = 0; i < universe.size(); i++)
-        {
-          /* Get all the ins for this block to put through the meet function */
-          std::vector<BitVector> ins;
-          for (auto *pred : predecessors(universe[i]))
-          {
-            /* We need to find the element of the pred to add it to ins properly */
-            auto it = std::find(universe.begin(), universe.end(), pred);
-            int index = std::distance(universe.begin(), it);
-            /* Add it to ins */
-            ins.push_back(bs.out[index]);
-          }
-          /* Get the new out but make sure it has preds first */
-          BitVector new_out;
-          if (ins.empty())
-          {
-            new_out = bs.out[i];
-          }
-          else
-          {
-            /* Get the new out meet of the preds for this block (intersection)*/
-            new_out = meet(ins, 2);
-            /* Union that new out with the current blocks value */
-            new_out.set(i);
-          }
+        outs() << "Loop starting at: "
+               << L->getHeader()->getName() << "\n";
 
-          /* Check new out vs old and set the out for this basic block to the new out */
-          if (new_out != bs.out[i])
-          {
-            changed = true;
-            bs.out[i] = new_out;
-          }
-        }
-      }
-      /* Nice print for each basic block all the required fields */
-
-      for (int i = 0; i < universe.size(); i++)
-      {
-        outs() << "BB: ";
-        universe[i]->printAsOperand(outs(), false);
-        outs() << "\n";
-        printBasicBlockBitSet(outs(), "OUT", bs.out[i], universe);
-      }
-      /* Print out the closest dominator */
-      for (int i = 1; i < universe.size(); i++)
-      {
-        int index = -1;
-        for (int j = 0; j < universe.size(); j++)
+        /* Print outs cleanly */
+        for (int i = 0; i < loop_results.universe.size(); i++)
         {
-          if (j != i && bs.out[i].test(j))
-          {
-            index = j;
-          }
+          outs() << "BB: ";
+          loop_results.universe[i]->printAsOperand(outs(), false);
+          outs() << "\n";
+          printBasicBlockBitSet(outs(), "OUT", loop_results.out[i], loop_results.universe);
         }
 
-        if (index != -1)
+        /* Print out the closest dominator */
+        for (int i = 1; i < loop_results.universe.size(); i++)
         {
-          outs() << universe[i]->getName()
-                 << " is dominated by "
-                 << universe[index]->getName()
-                 << "\n";
+          int index = -1;
+          for (int j = 0; j < loop_results.universe.size(); j++)
+          {
+            if (j != i && loop_results.out[i].test(j))
+            {
+              index = j;
+            }
+          }
+
+          if (index != -1)
+          {
+            outs() << loop_results.universe[i]->getName()
+                   << " is dominated by "
+                   << loop_results.universe[index]->getName()
+                   << "\n";
+          }
         }
       }
       return PreservedAnalyses::all();
