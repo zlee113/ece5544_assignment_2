@@ -453,16 +453,28 @@ namespace
 
   struct loop_invariant_code_motion : PassInfoMixin<loop_invariant_code_motion>
   {
-    bool isInvariant(Instruction *I, Loop *L, DominatorTree *DT)
+    bool isInvariant(Instruction *I, Loop *L)
     {
-      bool invariant = true;
       std::vector<BasicBlock *> BB = L->getBlocksVector();
+      bool validInstType = false;
+      validInstType = (isa <BinaryOperator>(I) || I->isShift() || isa <SelectInst>(I) || isa <CastInst>(I) || isa <GetElementPtrInst>(I));
       for (auto &B : BB)
       {
-        if (isSafeToSpeculativelyExecute(I) && !I->mayReadFromMemory() && !isa<LandingPadInst>(I) && ReachingPass(I, L) && DT->dominates(I, B))
+          if (!(validInstType && ReachingPass(I, L)))
           return false;
       }
       return true;
+    }
+
+    bool safeToHoist(Instruction* I, Loop* L, DominatorTree* DT)
+    {
+        std::vector<BasicBlock*> BB = L->getBlocksVector();
+        for (auto& B : BB)
+        {
+            if (!(isSafeToSpeculativelyExecute(I) && DT->dominates(I, B)))
+                return false;
+        }
+        return true;
     }
 
     bool ReachingPass(Instruction *I, Loop *L)
@@ -477,8 +489,6 @@ namespace
             return reaches;
           else
           {
-            if (!I->getType()->isVoidTy())
-            {
               if (I->getNumOperands() == 2)
               {
                 Value *V = cast<Value>(I);
@@ -492,7 +502,6 @@ namespace
                   reaches = false;
               }
             }
-          }
         }
       }
       return reaches;
@@ -503,14 +512,12 @@ namespace
       outs() << "PASS RUNNING ON: " << L.getName() << "\n";
 
       // Step 1: Find the loops. Create a bool for if a nested loop is found, telling the code to recheck loop bodies for potential further bubbling
-      llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop> *KLoop = new llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>();
-      llvm::DominatorTree *DT = new llvm::DominatorTree(*L.getHeader()->getParent());
-      KLoop->analyze(*DT);
-      KLoop->print(outs());
-      outs() << "\n";
+      //llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop> *KLoop = new llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>();
+      //llvm::DominatorTree *DT = new llvm::DominatorTree(*L.getHeader()->getParent());
+      //KLoop->analyze(*DT);
+      //KLoop->print(outs());
+      //outs() << "\n";
 
-      for (std::vector<Loop *>::const_iterator it = KLoop->begin(); it != KLoop->end(); ++it)
-      {
         if (L.getLoopPreheader() != NULL)
         {
           /*Step 2: Place two empty basic blocks BETWEEN the loop preheader and the loop header
@@ -532,26 +539,29 @@ namespace
           {
             for (auto &I : *B)
             {
-              // Step 3: Run a dominators and reaching definitions pass to see if an instruction can be safely moved outside the loop
-              if (isInvariant(&I, ((Loop *)*it), new llvm::DominatorTree(*L.getHeader()->getParent())))
-              {
-                outs() << "progress \n";
-                // Step 4: If the instruction can be moved, move it to the new unconditional block. Otherwise, move it to the new conditional block
-                // Instruction* newInst = I.clone();
-                // newInst->insertBefore(uncondBlock->end()->getPrevNode());
-                // I.removeFromParent();
-              }
-              else
-              {
-                // Instruction* newInst = I.clone();
-                // newInst->insertBefore(condBlock->end()->getPrevNode());
-                // I.removeFromParent();
-              }
+                if (!(I.getType()->isVoidTy()))
+                {
+                    // Step 3: Run a dominators and reaching definitions pass to see if an instruction can be safely moved outside the loop
+                    if (isInvariant(&I, &L) && safeToHoist(&I, &L, new llvm::DominatorTree(*L.getHeader()->getParent())))
+                    {
+                        outs() << "progress \n";
+                        // Step 4: If the instruction can be moved, move it to the new unconditional block. Otherwise, move it to the new conditional block
+                        //Instruction* newInst = I.clone();
+                        //I.removeFromParent();
+                        //newInst->insertBefore(uncondBlock->end()->getPrevNode());
+                    }
+                    else
+                    {
+                        //Instruction* newInst = I.clone();
+                        //I.removeFromParent();
+                        //newInst->insertBefore(condBlock->end()->getPrevNode());
+                    }
+                }
             }
+            //B->eraseFromParent();
           }
         }
-      }
-
+      
       return PreservedAnalyses::all();
     }
   };
