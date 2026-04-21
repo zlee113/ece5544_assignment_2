@@ -190,12 +190,18 @@ namespace
     /* Find the index of x in the universe*/
     auto itx = std::find(doms->universe.begin(), doms->universe.end(), x);
     if (itx == doms->universe.end())
-      return false;
+    {
+        outs() << "BasicBlock x not in universe" << "\n";
+        return false;
+    }
 
     /* Find the index of y in the universe */
     auto ity = std::find(doms->universe.begin(), doms->universe.end(), y);
     if (ity == doms->universe.end())
-      return false;
+    {
+        outs() << "BasicBlock y not in universe" << "\n";
+        return false;
+    }
 
     int index_x = std::distance(doms->universe.begin(), itx);
     int index_y = std::distance(doms->universe.begin(), ity);
@@ -507,20 +513,35 @@ namespace
     bool isInvariant(Instruction *I, Loop *L)
     {
       std::vector<BasicBlock *> BB = L->getBlocksVector();
-      bool validInstType = false;
+      bool validInstType = false, defReaching = false;
       validInstType = (isa <BinaryOperator>(I) || I->isShift() || isa <SelectInst>(I) || isa <CastInst>(I) || isa <GetElementPtrInst>(I));
-      //outs() << (validInstType && ReachingPass(I, L)) << "\n";
+      //outs() << I->getOpcodeName() << "      " << validInstType << "\n";
       return (validInstType && ReachingPass(I, L));
     }
 
-    bool safeToHoist(Instruction* I, Loop* L, DominatorTree* DT)
+    bool safeToHoist(Instruction* I, Loop* L)
     {
-        SmallVector<BasicBlock*, 4> ExitBlocks;
-        L->getExitBlocks(ExitBlocks);
-        for (auto& B : ExitBlocks)
+        loop_dom doms = get_loop_dominators(L);
+        //SmallVector<BasicBlock*, 8> ExitBlocks;
+        //L->getExitBlocks(ExitBlocks);
+
+        std::vector <BasicBlock*> exitBB;
+        std::vector<BasicBlock*> BB = L->getBlocksVector();
+
+        for (auto& B : BB)
         {
-            outs() << B << "\n";
-            if (!(isSafeToSpeculativelyExecute(I) && DT->dominates(I, B)))
+            if (L->isLoopExiting(B))
+                for (BasicBlock* succ : successors(B))
+                {
+                    if (!L->contains(succ))
+                        exitBB.push_back(succ);
+                }
+        }
+
+        for (auto& B : exitBB)
+        {
+           // outs() << isSafeToSpeculativelyExecute(I) << "     " << check_if_dominates(&doms, I->getParent(), B) << "\n";
+            if (!(isSafeToSpeculativelyExecute(I) || check_if_dominates(&doms, I->getParent(), B)))
                 return false;
         }
         return true;
@@ -561,33 +582,28 @@ namespace
     {
       outs() << "PASS RUNNING ON: " << L.getName() << "\n";
 
-      // Step 1: Find the loops. Create a bool for if a nested loop is found, telling the code to recheck loop bodies for potential further bubbling
-      llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop> *KLoop = new llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>();
+       llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop> *KLoop = new llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>();
       llvm::DominatorTree *DT = new llvm::DominatorTree(*L.getHeader()->getParent());
       KLoop->analyze(*DT);
       //KLoop->print(outs());
       //outs() << "\n";
 
+      std::vector<Instruction*> instsToMove;
+
         if (L.getLoopPreheader() != NULL)
         {
-            SmallVector<BasicBlock*, 16> DominatedBlocks;
-            DT->getDescendants(L.getLoopPreheader(), DominatedBlocks);
-          /*Step 2: Place two empty basic blocks BETWEEN the loop preheader and the loop header
-          the upper block should be an unconditional landing block where all INVARIANT instructions go
-          the lower block should be a conditional block that replicates the branch condition of the original loop header
-          make sure to edit the CFG and provide a path from the conditional block to the loop exit
-          make sure the loop is executed AT LEAST once*/
-          /*BasicBlock* uncondBlock = BasicBlock::Create(L.getHeader()->getParent()->getContext(), "uncondLandingPlatform", L.getHeader()->getParent());
-          IRBuilder<> uncondBuilder(uncondBlock);
-          uncondBuilder.SetInsertPoint(uncondBlock);
-          BranchInst *uncondEnd = uncondBuilder.CreateBr(uncondBlock);
-          BasicBlock *condBlock = BasicBlock::Create(L.getHeader()->getParent()->getContext(), "condLandingPlatform", L.getHeader()->getParent());
-          IRBuilder<> condBuilder(condBlock);
-          condBuilder.SetInsertPoint(condBlock);
-          BranchInst *condEnd = condBuilder.CreateBr(condBlock);*/
-
+            //Find all blocks dominated by loop header
+          std::vector <BasicBlock*> domBB;
           std::vector<BasicBlock *> BB = L.getBlocksVector();
-          for (auto &B : DominatedBlocks)
+          loop_dom doms = get_loop_dominators(&L);
+
+          for (auto& B : BB)
+          {
+              if (check_if_dominates(&doms, L.getHeader(), B))
+                  domBB.push_back(B);
+          }
+
+          for (auto &B : domBB)
           {
               //outs() << KLoop->getLoopFor(B)->getLoopDepth() << "     " << &L << "\n";
               if (KLoop->getLoopFor(B) != NULL && KLoop->getLoopFor(B)->getLoopDepth() == 1)
@@ -596,25 +612,24 @@ namespace
                   {
                       if (!(I.getType()->isVoidTy()))
                       {
-                          // Step 3: Run a dominators and reaching definitions pass to see if an instruction can be safely moved outside the loop
-                          if (isInvariant(&I, &L) && safeToHoist(&I, &L, new llvm::DominatorTree(*L.getHeader()->getParent())))
+                          // Run a dominators and reaching definitions pass to see if an instruction can be safely moved outside the loop
+                          if (isInvariant(&I, &L) && safeToHoist(&I, &L))
                           {
-                              outs() << "progress \n";
-                              // Step 4: If the instruction can be moved, move it to the new unconditional block. Otherwise, move it to the new conditional block
-                              //Instruction* newInst = I.clone();
-                              I.removeFromParent();
-                              I.insertBefore(L.getLoopPreheader()->end()->getPrevNode());
-                          }
-                          else
-                          {
-                              //Instruction* newInst = I.clone();
-                              //I.removeFromParent();
-                              //newInst->insertBefore(condBlock->end()->getPrevNode());
+                              //outs() << "progress \n";
+                              //If the instruction can be moved, add it to the vector of instructions to move
+                              instsToMove.push_back(&I);
                           }
                       }
                   }
-                  //B->eraseFromParent();
               }
+          }
+
+          for (auto& I : instsToMove)
+          {
+              outs() << I->getOpcodeName() << "\n";
+              //I->moveAfter(L.getLoopPreheader()->begin());
+              //I->updateLocationAfterHoist();
+              I->removeFromParent();
           }
         }
       
