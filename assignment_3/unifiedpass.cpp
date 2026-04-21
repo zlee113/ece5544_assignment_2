@@ -509,19 +509,17 @@ namespace
       std::vector<BasicBlock *> BB = L->getBlocksVector();
       bool validInstType = false;
       validInstType = (isa <BinaryOperator>(I) || I->isShift() || isa <SelectInst>(I) || isa <CastInst>(I) || isa <GetElementPtrInst>(I));
-      for (auto &B : BB)
-      {
-          if (!(validInstType && ReachingPass(I, L)))
-          return false;
-      }
-      return true;
+      //outs() << (validInstType && ReachingPass(I, L)) << "\n";
+      return (validInstType && ReachingPass(I, L));
     }
 
     bool safeToHoist(Instruction* I, Loop* L, DominatorTree* DT)
     {
-        std::vector<BasicBlock*> BB = L->getBlocksVector();
-        for (auto& B : BB)
+        SmallVector<BasicBlock*, 4> ExitBlocks;
+        L->getExitBlocks(ExitBlocks);
+        for (auto& B : ExitBlocks)
         {
+            outs() << B << "\n";
             if (!(isSafeToSpeculativelyExecute(I) && DT->dominates(I, B)))
                 return false;
         }
@@ -555,6 +553,7 @@ namespace
             }
         }
       }
+      //outs() << reaches << "\n";
       return reaches;
     }
 
@@ -563,53 +562,59 @@ namespace
       outs() << "PASS RUNNING ON: " << L.getName() << "\n";
 
       // Step 1: Find the loops. Create a bool for if a nested loop is found, telling the code to recheck loop bodies for potential further bubbling
-      //llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop> *KLoop = new llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>();
-      //llvm::DominatorTree *DT = new llvm::DominatorTree(*L.getHeader()->getParent());
-      //KLoop->analyze(*DT);
+      llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop> *KLoop = new llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>();
+      llvm::DominatorTree *DT = new llvm::DominatorTree(*L.getHeader()->getParent());
+      KLoop->analyze(*DT);
       //KLoop->print(outs());
       //outs() << "\n";
 
         if (L.getLoopPreheader() != NULL)
         {
+            SmallVector<BasicBlock*, 16> DominatedBlocks;
+            DT->getDescendants(L.getLoopPreheader(), DominatedBlocks);
           /*Step 2: Place two empty basic blocks BETWEEN the loop preheader and the loop header
           the upper block should be an unconditional landing block where all INVARIANT instructions go
           the lower block should be a conditional block that replicates the branch condition of the original loop header
           make sure to edit the CFG and provide a path from the conditional block to the loop exit
           make sure the loop is executed AT LEAST once*/
-          BasicBlock *uncondBlock = BasicBlock::Create(L.getHeader()->getParent()->getContext(), "uncondLandingPlatform", L.getHeader()->getParent());
+          /*BasicBlock* uncondBlock = BasicBlock::Create(L.getHeader()->getParent()->getContext(), "uncondLandingPlatform", L.getHeader()->getParent());
           IRBuilder<> uncondBuilder(uncondBlock);
           uncondBuilder.SetInsertPoint(uncondBlock);
           BranchInst *uncondEnd = uncondBuilder.CreateBr(uncondBlock);
           BasicBlock *condBlock = BasicBlock::Create(L.getHeader()->getParent()->getContext(), "condLandingPlatform", L.getHeader()->getParent());
           IRBuilder<> condBuilder(condBlock);
           condBuilder.SetInsertPoint(condBlock);
-          BranchInst *condEnd = condBuilder.CreateBr(condBlock);
+          BranchInst *condEnd = condBuilder.CreateBr(condBlock);*/
 
           std::vector<BasicBlock *> BB = L.getBlocksVector();
-          for (auto &B : BB)
+          for (auto &B : DominatedBlocks)
           {
-            for (auto &I : *B)
-            {
-                if (!(I.getType()->isVoidTy()))
-                {
-                    // Step 3: Run a dominators and reaching definitions pass to see if an instruction can be safely moved outside the loop
-                    if (isInvariant(&I, &L) && safeToHoist(&I, &L, new llvm::DominatorTree(*L.getHeader()->getParent())))
-                    {
-                        outs() << "progress \n";
-                        // Step 4: If the instruction can be moved, move it to the new unconditional block. Otherwise, move it to the new conditional block
-                        //Instruction* newInst = I.clone();
-                        //I.removeFromParent();
-                        //newInst->insertBefore(uncondBlock->end()->getPrevNode());
-                    }
-                    else
-                    {
-                        //Instruction* newInst = I.clone();
-                        //I.removeFromParent();
-                        //newInst->insertBefore(condBlock->end()->getPrevNode());
-                    }
-                }
-            }
-            //B->eraseFromParent();
+              //outs() << KLoop->getLoopFor(B)->getLoopDepth() << "     " << &L << "\n";
+              if (KLoop->getLoopFor(B) != NULL && KLoop->getLoopFor(B)->getLoopDepth() == 1)
+              {
+                  for (auto& I : *B)
+                  {
+                      if (!(I.getType()->isVoidTy()))
+                      {
+                          // Step 3: Run a dominators and reaching definitions pass to see if an instruction can be safely moved outside the loop
+                          if (isInvariant(&I, &L) && safeToHoist(&I, &L, new llvm::DominatorTree(*L.getHeader()->getParent())))
+                          {
+                              outs() << "progress \n";
+                              // Step 4: If the instruction can be moved, move it to the new unconditional block. Otherwise, move it to the new conditional block
+                              //Instruction* newInst = I.clone();
+                              I.removeFromParent();
+                              I.insertBefore(L.getLoopPreheader()->end()->getPrevNode());
+                          }
+                          else
+                          {
+                              //Instruction* newInst = I.clone();
+                              //I.removeFromParent();
+                              //newInst->insertBefore(condBlock->end()->getPrevNode());
+                          }
+                      }
+                  }
+                  //B->eraseFromParent();
+              }
           }
         }
       
