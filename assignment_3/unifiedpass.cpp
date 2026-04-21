@@ -498,42 +498,42 @@ namespace
       return reaches;
     }
 
-    PreservedAnalyses run(Function &F, FunctionAnalysisManager &)
+    PreservedAnalyses run(Loop& L, LoopAnalysisManager& AM, LoopStandardAnalysisResults& res, LPMUpdater& updater)
     {
-      outs() << "PASS RUNNING ON: " << F.getName() << "\n";
+      outs() << "PASS RUNNING ON: " << L.getName() << "\n";
 
       // Step 1: Find the loops. Create a bool for if a nested loop is found, telling the code to recheck loop bodies for potential further bubbling
       llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop> *KLoop = new llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>();
-      llvm::DominatorTree *DT = new llvm::DominatorTree(F);
+      llvm::DominatorTree *DT = new llvm::DominatorTree(*L.getHeader()->getParent());
       KLoop->analyze(*DT);
       KLoop->print(outs());
       outs() << "\n";
 
       for (std::vector<Loop *>::const_iterator it = KLoop->begin(); it != KLoop->end(); ++it)
       {
-        if (((Loop *)*it)->getLoopPreheader() != NULL)
+        if (L.getLoopPreheader() != NULL)
         {
           /*Step 2: Place two empty basic blocks BETWEEN the loop preheader and the loop header
           the upper block should be an unconditional landing block where all INVARIANT instructions go
           the lower block should be a conditional block that replicates the branch condition of the original loop header
           make sure to edit the CFG and provide a path from the conditional block to the loop exit
           make sure the loop is executed AT LEAST once*/
-          BasicBlock *uncondBlock = BasicBlock::Create(F.getContext(), "uncondLandingPlatform", &F);
+          BasicBlock *uncondBlock = BasicBlock::Create(L.getHeader()->getParent()->getContext(), "uncondLandingPlatform", L.getHeader()->getParent());
           IRBuilder<> uncondBuilder(uncondBlock);
           uncondBuilder.SetInsertPoint(uncondBlock);
           BranchInst *uncondEnd = uncondBuilder.CreateBr(uncondBlock);
-          BasicBlock *condBlock = BasicBlock::Create(F.getContext(), "condLandingPlatform", &F);
+          BasicBlock *condBlock = BasicBlock::Create(L.getHeader()->getParent()->getContext(), "condLandingPlatform", L.getHeader()->getParent());
           IRBuilder<> condBuilder(condBlock);
           condBuilder.SetInsertPoint(condBlock);
           BranchInst *condEnd = condBuilder.CreateBr(condBlock);
 
-          std::vector<BasicBlock *> BB = ((Loop *)*it)->getBlocksVector();
+          std::vector<BasicBlock *> BB = L.getBlocksVector();
           for (auto &B : BB)
           {
             for (auto &I : *B)
             {
               // Step 3: Run a dominators and reaching definitions pass to see if an instruction can be safely moved outside the loop
-              if (isInvariant(&I, ((Loop *)*it), new llvm::DominatorTree(F)))
+              if (isInvariant(&I, ((Loop *)*it), new llvm::DominatorTree(*L.getHeader()->getParent())))
               {
                 outs() << "progress \n";
                 // Step 4: If the instruction can be moved, move it to the new unconditional block. Otherwise, move it to the new conditional block
@@ -562,7 +562,7 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo()
       LLVM_PLUGIN_API_VERSION, "UnifiedPass", "v0.3-starter", [](PassBuilder &PB)
       {
         PB.registerPipelineParsingCallback(
-            [](StringRef Name, FunctionPassManager &FPM,
+            [](StringRef Name, FunctionPassManager& FPM,
                ArrayRef<PassBuilder::PipelineElement>) -> bool
             {
               if (Name == "dominators")
@@ -570,14 +570,20 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo()
                 FPM.addPass(dominators());
                 return true;
               }
-              else if (Name == "dead-code-elimination")
+              if (Name == "dead-code-elimination")
               {
                 FPM.addPass(dead_code_elimination());
                 return true;
               }
-              else if (Name == "loop-invariant-code-motion")
+              return false;
+            });
+        PB.registerPipelineParsingCallback(
+            [](StringRef Name, LoopPassManager& LPM,
+               ArrayRef<PassBuilder::PipelineElement>) -> bool
+            {
+              if (Name == "loop-invariant-code-motion")
               {
-                FPM.addPass(loop_invariant_code_motion());
+                LPM.addPass(loop_invariant_code_motion());
                 return true;
               }
               return false;
