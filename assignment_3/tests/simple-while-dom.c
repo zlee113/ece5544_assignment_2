@@ -1,6 +1,6 @@
 int main()
 {
-    volatile int result;
+    int result;
     int n = 1;
     while (n++ < 100)
     {
