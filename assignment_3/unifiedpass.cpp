@@ -191,22 +191,22 @@ namespace
     auto itx = std::find(doms->universe.begin(), doms->universe.end(), x);
     if (itx == doms->universe.end())
     {
-        outs() << "BasicBlock x not in universe" << "\n";
-        return false;
+      outs() << "BasicBlock x not in universe" << "\n";
+      return false;
     }
 
     /* Find the index of y in the universe */
     auto ity = std::find(doms->universe.begin(), doms->universe.end(), y);
     if (ity == doms->universe.end())
     {
-        outs() << "BasicBlock y not in universe" << "\n";
-        return false;
+      outs() << "BasicBlock y not in universe" << "\n";
+      return false;
     }
 
     int index_x = std::distance(doms->universe.begin(), itx);
     int index_y = std::distance(doms->universe.begin(), ity);
 
-   // outs() << index_x << "      " << index_y << "\n";
+    // outs() << index_x << "      " << index_y << "\n";
 
     /* x dominates y if the bit is set for x in the out for y */
     return doms->out[index_y].test(index_x);
@@ -516,70 +516,69 @@ namespace
     {
       std::vector<BasicBlock *> BB = L->getBlocksVector();
       bool validInstType = false, defReaching = false;
-      validInstType = (isa <BinaryOperator>(I) || I->isShift() || isa <SelectInst>(I) || isa <CastInst>(I) || isa <GetElementPtrInst>(I));
+      validInstType = (isa<BinaryOperator>(I) || I->isShift() || isa<SelectInst>(I) || isa<CastInst>(I) || isa<GetElementPtrInst>(I));
       if (isa<ConstantInt>(I->getOperand(0)) && isa<ConstantInt>(I->getOperand(1)))
-          return validInstType;
+        return validInstType;
 
-      for (Use& U : I->operands())
+      for (Use &U : I->operands())
       {
-          if (auto inst = dyn_cast<Instruction>(U))
+        if (auto inst = dyn_cast<Instruction>(U))
+        {
+          outs() << *inst << "\n";
+          if (isa<PHINode>(inst))
           {
-              outs() << *inst << "\n";
-              if (isa<PHINode>(inst))
-              {
-                  outs() << "Found a phi node\n";
-                return false;
-              }
-              if (!isInvariant(inst, L))
-                  return false;
+            return false;
           }
+          if (!isInvariant(inst, L))
+            return false;
+        }
       }
 
-      //outs() << validInstType << "      " << ReachingPass(I, L) << "\n";
+      // outs() << validInstType << "      " << ReachingPass(I, L) << "\n";
       return (validInstType && ReachingPass(I, L));
     }
 
-    bool isDefinedOutside(llvm::Loop* L, llvm::Instruction* I)
+    bool isDefinedOutside(llvm::Loop *L, llvm::Instruction *I)
     {
-        // getParent() returns the BasicBlock containing the instruction
-        bool defined = true;
-        for (Use& U : I->operands())
-        {
-            if (auto inst = dyn_cast<Instruction>(U))
-                defined = defined && !L->contains(inst);
-            // bool op2DefinedOutside = !L->contains(cast<Instruction>(I->getOperand(1))->getParent());
-            outs() << defined << "        ";
-        }
-        outs() << "\n";
-        return defined;
+      // getParent() returns the BasicBlock containing the instruction
+      bool defined = true;
+      for (Use &U : I->operands())
+      {
+        if (auto inst = dyn_cast<Instruction>(U))
+          defined = defined && !L->contains(inst);
+        // bool op2DefinedOutside = !L->contains(cast<Instruction>(I->getOperand(1))->getParent());
+        outs() << defined << "        ";
+      }
+      outs() << "\n";
+      return defined;
     }
 
-    bool safeToHoist(Instruction* I, Loop* L)
+    bool safeToHoist(Instruction *I, Loop *L)
     {
-        loop_dom doms = get_loop_dominators(L);
-        //SmallVector<BasicBlock*, 8> ExitBlocks;
-        //L->getExitBlocks(ExitBlocks);
+      loop_dom doms = get_loop_dominators(L);
+      // SmallVector<BasicBlock*, 8> ExitBlocks;
+      // L->getExitBlocks(ExitBlocks);
 
-        std::vector <BasicBlock*> exitBB;
-        std::vector<BasicBlock*> BB = L->getBlocksVector();
+      std::vector<BasicBlock *> exitBB;
+      std::vector<BasicBlock *> BB = L->getBlocksVector();
 
-        for (auto& B : BB)
-        {
-            if (L->isLoopExiting(B))
-                for (BasicBlock* succ : successors(B))
-                {
-                    if (!L->contains(succ))
-                        exitBB.push_back(succ);
-                }
-        }
+      for (auto &B : BB)
+      {
+        if (L->isLoopExiting(B))
+          for (BasicBlock *succ : successors(B))
+          {
+            if (!L->contains(succ))
+              exitBB.push_back(succ);
+          }
+      }
 
-        for (auto& B : exitBB)
-        {
-           // outs() << isSafeToSpeculativelyExecute(I) << "     " << check_if_dominates(&doms, I->getParent(), B) << "\n";
-            if (!(isSafeToSpeculativelyExecute(I) || check_if_dominates(&doms, I->getParent(), B)))
-                return false;
-        }
-        return true;
+      for (auto &B : exitBB)
+      {
+        // outs() << isSafeToSpeculativelyExecute(I) << "     " << check_if_dominates(&doms, I->getParent(), B) << "\n";
+        if (!(isSafeToSpeculativelyExecute(I) || check_if_dominates(&doms, I->getParent(), B)))
+          return false;
+      }
+      return true;
     }
 
     bool ReachingPass(Instruction *inst, Loop *L)
@@ -609,187 +608,186 @@ namespace
             }
         }*/
 
-        Function* F = L->getHeader()->getParent();
+      Function *F = L->getHeader()->getParent();
 
-        struct BlockState
-        {
-            BitVector in;
-            BitVector out;
-            BitVector gen;
-            BitVector kill;
-        };
+      struct BlockState
+      {
+        BitVector in;
+        BitVector out;
+        BitVector gen;
+        BitVector kill;
+      };
 
-        std::vector<Instruction*> universe;
-        for (auto& BB : *F)
+      std::vector<Instruction *> universe;
+      for (auto &BB : *F)
+      {
+        for (auto &I : BB)
         {
-            for (auto& I : BB)
-            {
-                if (!I.getType()->isVoidTy())
-                {
-                    universe.push_back(&I);
-                }
-            }
+          if (!I.getType()->isVoidTy())
+          {
+            universe.push_back(&I);
+          }
         }
-
-        /* Creating a vector for the order of traversal through the tree */
-        DenseMap<const BasicBlock*, BlockState> st;
-        std::vector<BasicBlock*> order;
-        order.push_back(&F->getEntryBlock());
-        for (size_t i = 0; i < order.size(); ++i)
-        {
-            for (BasicBlock* succ : successors(order[i]))
-            {
-                if (std::find(order.begin(), order.end(), succ) == order.end())
-                    order.push_back(succ);
-            }
-        }
-
-        /* Creates bitvector with every bit set the size of the universe */
-        BitVector all(universe.size(), true);
-        for (BasicBlock* BB : order)
-        {
-            BlockState bs;
-            /* Default in: empty set */
-            bs.in = BitVector(universe.size(), false);
-            /* Default out: Var if not entry */
-            bs.out = BitVector(universe.size(), false);
-            /* Default gen: empty set */
-            bs.gen = BitVector(universe.size(), false);
-            /* Default kill: empty set */
-            bs.kill = BitVector(universe.size(), false);
-
-            for (Instruction& I : *BB)
-            {
-                if (!I.getType()->isVoidTy())
-                {
-                    /* Gets value of said instruction in the universe */
-                    auto it = std::find(universe.begin(), universe.end(), &I);
-                    /* Add to gen if expression matches and isn't end */
-                    if (it != universe.end())
-                        bs.gen.set(static_cast<unsigned>(it - universe.begin()));
-                    for (size_t i = 0; i < universe.size(); ++i)
-                    {
-                        /* If the instruction defines a value a expression in universe uses it add it to kill */
-                        if (universe[i] == &I)
-                            bs.kill.set(static_cast<unsigned>(i));
-                    }
-                }
-            }
-
-            /* Make kill not invalidate newly gen expressions and add it */
-            BitVector notGen = bs.gen;
-            bs.kill &= notGen.flip();
-            st[BB] = bs;
-        }
-
-        /* Iterative section for finding in and out */
-        bool changed = true;
-        while (changed)
-        {
-            /* Fixed point check */
-            changed = false;
-            for (BasicBlock* BB : order)
-            {
-                /* Get pred outs */
-                std::vector<BitVector> predOuts;
-                /* If starting outs is empty */
-                if (BB == &F->getEntryBlock())
-                    predOuts.push_back(BitVector(universe.size(), false));
-                /* Checks all predecessors and add up their outs */
-                for (BasicBlock* pred : predecessors(BB))
-                    predOuts.push_back(st[pred].out);
-                /* If predecessors outs was empty push empty bitvector */
-                if (predOuts.empty())
-                    predOuts.push_back(BitVector(universe.size(), false));
-
-                /* Set in to intersection of all previous outs */
-                st[BB].in = meet(predOuts, 1);
-
-                /* Compute new out as GEN U (IN - KILL)*/
-                BitVector newOut = st[BB].in;
-                newOut.reset(st[BB].kill);
-                newOut |= st[BB].gen;
-
-                if (newOut != st[BB].out)
-                {
-                    st[BB].out = newOut;
-                    changed = true;
-                }
-            }
-        }
-
-
-        //an instruction reaches if its definition is in the out vector of the loop header
-        auto it = std::find(universe.begin(), universe.end(), inst);
-        int index = std::distance(universe.begin(), it);
-        //auto ity = std::find(st[L->getHeader()].out.begin(), st[L->getHeader()].out.end(), static_cast<unsigned>(it - universe.begin()));
-        if (it != universe.end())
-            outs() << st[L->getHeader()].out.test(static_cast<unsigned>(it - universe.begin())) << "\n";
-            //outs() << "test\n";
-        //return (ity == universe.end());
-
-        //return doms->out[index].test(static_cast<unsigned>(it - universe.begin()));
-        return st[L->getHeader()].out.test(static_cast<unsigned>(it - universe.begin()));
       }
 
-    PreservedAnalyses run(Loop& L, LoopAnalysisManager& AM, LoopStandardAnalysisResults& res, LPMUpdater& updater)
-    {
-      outs() << "PASS RUNNING ON: " << L.getName() << "\n";
-
-       llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop> *KLoop = new llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>();
-      llvm::DominatorTree *DT = new llvm::DominatorTree(*L.getHeader()->getParent());
-      KLoop->analyze(*DT);
-      //KLoop->print(outs());
-      //outs() << "\n";
-
-      std::vector<Instruction*> instsToMove;
-
-        if (L.getLoopPreheader() != NULL)
+      /* Creating a vector for the order of traversal through the tree */
+      DenseMap<const BasicBlock *, BlockState> st;
+      std::vector<BasicBlock *> order;
+      order.push_back(&F->getEntryBlock());
+      for (size_t i = 0; i < order.size(); ++i)
+      {
+        for (BasicBlock *succ : successors(order[i]))
         {
-            //Find all blocks dominated by loop header
-          std::vector <BasicBlock*> domBB;
-          std::vector<BasicBlock *> BB = L.getBlocksVector();
-          loop_dom doms = get_loop_dominators(&L);
+          if (std::find(order.begin(), order.end(), succ) == order.end())
+            order.push_back(succ);
+        }
+      }
 
-          for (auto& B : BB)
+      /* Creates bitvector with every bit set the size of the universe */
+      BitVector all(universe.size(), true);
+      for (BasicBlock *BB : order)
+      {
+        BlockState bs;
+        /* Default in: empty set */
+        bs.in = BitVector(universe.size(), false);
+        /* Default out: Var if not entry */
+        bs.out = BitVector(universe.size(), false);
+        /* Default gen: empty set */
+        bs.gen = BitVector(universe.size(), false);
+        /* Default kill: empty set */
+        bs.kill = BitVector(universe.size(), false);
+
+        for (Instruction &I : *BB)
+        {
+          if (!I.getType()->isVoidTy())
           {
-              if (check_if_dominates(&doms, L.getHeader(), B))
-                  domBB.push_back(B);
-          }
-
-          for (auto &B : domBB)
-          {
-              //outs() << KLoop->getLoopFor(B)->getLoopDepth() << "     " << &L << "\n";
-              if (KLoop->getLoopFor(B) != NULL && KLoop->getLoopFor(B)->getLoopDepth() == 1)
-              {
-                  for (auto& I : *B)
-                  {
-                      //outs() << I << "\n";
-                      if (!(I.getType()->isVoidTy()))
-                      {
-                          // Run a dominators and reaching definitions pass to see if an instruction can be safely moved outside the loop
-                          if (isInvariant(&I, &L) && safeToHoist(&I, &L))
-                          {
-                              //outs() << "progress \n";
-                              //If the instruction can be moved, add it to the vector of instructions to move
-                              instsToMove.push_back(&I);
-                          }
-                      }
-                  }
-              }
-          }
-
-         // std::reverse(instsToMove.begin(), instsToMove.end());
-
-          for (auto& I : instsToMove)
-          {
-              //outs() << *I<< "\n";
-              I->moveBefore(L.getLoopPreheader()->end()->getPrevNode());
-              //I->updateLocationAfterHoist();
-              //I->removeFromParent();
+            /* Gets value of said instruction in the universe */
+            auto it = std::find(universe.begin(), universe.end(), &I);
+            /* Add to gen if expression matches and isn't end */
+            if (it != universe.end())
+              bs.gen.set(static_cast<unsigned>(it - universe.begin()));
+            for (size_t i = 0; i < universe.size(); ++i)
+            {
+              /* If the instruction defines a value a expression in universe uses it add it to kill */
+              if (universe[i] == &I)
+                bs.kill.set(static_cast<unsigned>(i));
+            }
           }
         }
-      
+
+        /* Make kill not invalidate newly gen expressions and add it */
+        BitVector notGen = bs.gen;
+        bs.kill &= notGen.flip();
+        st[BB] = bs;
+      }
+
+      /* Iterative section for finding in and out */
+      bool changed = true;
+      while (changed)
+      {
+        /* Fixed point check */
+        changed = false;
+        for (BasicBlock *BB : order)
+        {
+          /* Get pred outs */
+          std::vector<BitVector> predOuts;
+          /* If starting outs is empty */
+          if (BB == &F->getEntryBlock())
+            predOuts.push_back(BitVector(universe.size(), false));
+          /* Checks all predecessors and add up their outs */
+          for (BasicBlock *pred : predecessors(BB))
+            predOuts.push_back(st[pred].out);
+          /* If predecessors outs was empty push empty bitvector */
+          if (predOuts.empty())
+            predOuts.push_back(BitVector(universe.size(), false));
+
+          /* Set in to intersection of all previous outs */
+          st[BB].in = meet(predOuts, 1);
+
+          /* Compute new out as GEN U (IN - KILL)*/
+          BitVector newOut = st[BB].in;
+          newOut.reset(st[BB].kill);
+          newOut |= st[BB].gen;
+
+          if (newOut != st[BB].out)
+          {
+            st[BB].out = newOut;
+            changed = true;
+          }
+        }
+      }
+
+      // an instruction reaches if its definition is in the out vector of the loop header
+      auto it = std::find(universe.begin(), universe.end(), inst);
+      int index = std::distance(universe.begin(), it);
+      // auto ity = std::find(st[L->getHeader()].out.begin(), st[L->getHeader()].out.end(), static_cast<unsigned>(it - universe.begin()));
+      // outs() << "test\n";
+      // return (ity == universe.end());
+
+      // return doms->out[index].test(static_cast<unsigned>(it - universe.begin()));
+      return st[L->getHeader()].out.test(static_cast<unsigned>(it - universe.begin()));
+    }
+
+    PreservedAnalyses run(Loop &L, LoopAnalysisManager &AM, LoopStandardAnalysisResults &res, LPMUpdater &updater)
+    {
+      outs() << "=== ";
+      outs() << L.getName();
+      outs() << "=== \n";
+
+      llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop> *KLoop = new llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>();
+      llvm::DominatorTree *DT = new llvm::DominatorTree(*L.getHeader()->getParent());
+      KLoop->analyze(*DT);
+      // KLoop->print(outs());
+      // outs() << "\n";
+
+      std::vector<Instruction *> instsToMove;
+
+      if (L.getLoopPreheader() != NULL)
+      {
+        // Find all blocks dominated by loop header
+        std::vector<BasicBlock *> domBB;
+        std::vector<BasicBlock *> BB = L.getBlocksVector();
+        loop_dom doms = get_loop_dominators(&L);
+
+        for (auto &B : BB)
+        {
+          if (check_if_dominates(&doms, L.getHeader(), B))
+            domBB.push_back(B);
+        }
+
+        for (auto &B : domBB)
+        {
+          // outs() << KLoop->getLoopFor(B)->getLoopDepth() << "     " << &L << "\n";
+          if (KLoop->getLoopFor(B) != NULL && KLoop->getLoopFor(B)->getLoopDepth() == 1)
+          {
+            for (auto &I : *B)
+            {
+              // outs() << I << "\n";
+              if (!(I.getType()->isVoidTy()))
+              {
+                // Run a dominators and reaching definitions pass to see if an instruction can be safely moved outside the loop
+                if (isInvariant(&I, &L) && safeToHoist(&I, &L))
+                {
+                  // outs() << "progress \n";
+                  // If the instruction can be moved, add it to the vector of instructions to move
+                  instsToMove.push_back(&I);
+                }
+              }
+            }
+          }
+        }
+
+        // std::reverse(instsToMove.begin(), instsToMove.end());
+
+        for (auto &I : instsToMove)
+        {
+          outs() << "Moving: ";
+          I->print(outs());
+          outs() << "\n";
+          I->moveBefore(L.getLoopPreheader()->end()->getPrevNode());
+        }
+      }
+
       return PreservedAnalyses::all();
     }
   };
@@ -800,7 +798,7 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo()
       LLVM_PLUGIN_API_VERSION, "UnifiedPass", "v0.3-starter", [](PassBuilder &PB)
       {
         PB.registerPipelineParsingCallback(
-            [](StringRef Name, FunctionPassManager& FPM,
+            [](StringRef Name, FunctionPassManager &FPM,
                ArrayRef<PassBuilder::PipelineElement>) -> bool
             {
               if (Name == "dominators")
@@ -816,7 +814,7 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo()
               return false;
             });
         PB.registerPipelineParsingCallback(
-            [](StringRef Name, LoopPassManager& LPM,
+            [](StringRef Name, LoopPassManager &LPM,
                ArrayRef<PassBuilder::PipelineElement>) -> bool
             {
               if (Name == "loop-invariant-code-motion")
