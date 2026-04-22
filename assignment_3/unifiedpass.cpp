@@ -206,6 +206,8 @@ namespace
     int index_x = std::distance(doms->universe.begin(), itx);
     int index_y = std::distance(doms->universe.begin(), ity);
 
+   // outs() << index_x << "      " << index_y << "\n";
+
     /* x dominates y if the bit is set for x in the out for y */
     return doms->out[index_y].test(index_x);
   }
@@ -547,9 +549,9 @@ namespace
         return true;
     }
 
-    bool ReachingPass(Instruction *I, Loop *L)
+    bool ReachingPass(Instruction *inst, Loop *L)
     {
-      bool reaches = true;
+      /*bool reaches = true;
       std::vector<BasicBlock *> BB = L->getBlocksVector();
       for (auto &B : BB)
       {
@@ -572,11 +574,130 @@ namespace
                   reaches = false;
               }
             }
+        }*/
+
+        Function* F = L->getHeader()->getParent();
+
+        struct BlockState
+        {
+            BitVector in;
+            BitVector out;
+            BitVector gen;
+            BitVector kill;
+        };
+
+        std::vector<Instruction*> universe;
+        for (auto& BB : *F)
+        {
+            for (auto& I : BB)
+            {
+                if (!I.getType()->isVoidTy())
+                {
+                    universe.push_back(&I);
+                }
+            }
         }
+
+        /* Creating a vector for the order of traversal through the tree */
+        DenseMap<const BasicBlock*, BlockState> st;
+        std::vector<BasicBlock*> order;
+        order.push_back(&F->getEntryBlock());
+        for (size_t i = 0; i < order.size(); ++i)
+        {
+            for (BasicBlock* succ : successors(order[i]))
+            {
+                if (std::find(order.begin(), order.end(), succ) == order.end())
+                    order.push_back(succ);
+            }
+        }
+
+        /* Creates bitvector with every bit set the size of the universe */
+        BitVector all(universe.size(), true);
+        for (BasicBlock* BB : order)
+        {
+            BlockState bs;
+            /* Default in: empty set */
+            bs.in = BitVector(universe.size(), false);
+            /* Default out: Var if not entry */
+            bs.out = BitVector(universe.size(), false);
+            /* Default gen: empty set */
+            bs.gen = BitVector(universe.size(), false);
+            /* Default kill: empty set */
+            bs.kill = BitVector(universe.size(), false);
+
+            for (Instruction& I : *BB)
+            {
+                if (!I.getType()->isVoidTy())
+                {
+                    /* Gets value of said instruction in the universe */
+                    auto it = std::find(universe.begin(), universe.end(), &I);
+                    /* Add to gen if expression matches and isn't end */
+                    if (it != universe.end())
+                        bs.gen.set(static_cast<unsigned>(it - universe.begin()));
+                    for (size_t i = 0; i < universe.size(); ++i)
+                    {
+                        /* If the instruction defines a value a expression in universe uses it add it to kill */
+                        if (universe[i] == &I)
+                            bs.kill.set(static_cast<unsigned>(i));
+                    }
+                }
+            }
+
+            /* Make kill not invalidate newly gen expressions and add it */
+            BitVector notGen = bs.gen;
+            bs.kill &= notGen.flip();
+            st[BB] = bs;
+        }
+
+        /* Iterative section for finding in and out */
+        bool changed = true;
+        while (changed)
+        {
+            /* Fixed point check */
+            changed = false;
+            for (BasicBlock* BB : order)
+            {
+                /* Get pred outs */
+                std::vector<BitVector> predOuts;
+                /* If starting outs is empty */
+                if (BB == &F->getEntryBlock())
+                    predOuts.push_back(BitVector(universe.size(), false));
+                /* Checks all predecessors and add up their outs */
+                for (BasicBlock* pred : predecessors(BB))
+                    predOuts.push_back(st[pred].out);
+                /* If predecessors outs was empty push empty bitvector */
+                if (predOuts.empty())
+                    predOuts.push_back(BitVector(universe.size(), false));
+
+                /* Set in to intersection of all previous outs */
+                st[BB].in = meet(predOuts, 1);
+
+                /* Compute new out as GEN U (IN - KILL)*/
+                BitVector newOut = st[BB].in;
+                newOut.reset(st[BB].kill);
+                newOut |= st[BB].gen;
+
+                if (newOut != st[BB].out)
+                {
+                    st[BB].out = newOut;
+                    changed = true;
+                }
+            }
+        }
+
+
+        //an instruction reaches if its definition is in the out vector of the loop header
+        auto it = std::find(universe.begin(), universe.end(), inst);
+        int index = std::distance(universe.begin(), it);
+        //auto ity = std::find(st[L->getHeader()].out.begin(), st[L->getHeader()].out.end(), static_cast<unsigned>(it - universe.begin()));
+        if (it != universe.end())
+            outs() << st[L->getHeader()].out.test(static_cast<unsigned>(it - universe.begin())) << "\n";
+            //outs() << "test\n";
+        //return (ity == universe.end());
+
+        //return doms->out[index].test(static_cast<unsigned>(it - universe.begin()));
+        return st[L->getHeader()].out.test(static_cast<unsigned>(it - universe.begin()));
       }
-      //outs() << reaches << "\n";
-      return reaches;
-    }
 
     PreservedAnalyses run(Loop& L, LoopAnalysisManager& AM, LoopStandardAnalysisResults& res, LPMUpdater& updater)
     {
@@ -627,9 +748,9 @@ namespace
           for (auto& I : instsToMove)
           {
               outs() << I->getOpcodeName() << "\n";
-              //I->moveAfter(L.getLoopPreheader()->begin());
+              I->moveAfter(L.getLoopPreheader()->begin());
               //I->updateLocationAfterHoist();
-              I->removeFromParent();
+              //I->removeFromParent();
           }
         }
       
