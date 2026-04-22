@@ -517,8 +517,41 @@ namespace
       std::vector<BasicBlock *> BB = L->getBlocksVector();
       bool validInstType = false, defReaching = false;
       validInstType = (isa <BinaryOperator>(I) || I->isShift() || isa <SelectInst>(I) || isa <CastInst>(I) || isa <GetElementPtrInst>(I));
-      //outs() << I->getOpcodeName() << "      " << validInstType << "\n";
+      if (isa<ConstantInt>(I->getOperand(0)) && isa<ConstantInt>(I->getOperand(1)))
+          return validInstType;
+
+      for (Use& U : I->operands())
+      {
+          if (auto inst = dyn_cast<Instruction>(U))
+          {
+              outs() << *inst << "\n";
+              if (isa<PHINode>(inst))
+              {
+                  outs() << "Found a phi node\n";
+                return false;
+              }
+              if (!isInvariant(inst, L))
+                  return false;
+          }
+      }
+
+      //outs() << validInstType << "      " << ReachingPass(I, L) << "\n";
       return (validInstType && ReachingPass(I, L));
+    }
+
+    bool isDefinedOutside(llvm::Loop* L, llvm::Instruction* I)
+    {
+        // getParent() returns the BasicBlock containing the instruction
+        bool defined = true;
+        for (Use& U : I->operands())
+        {
+            if (auto inst = dyn_cast<Instruction>(U))
+                defined = defined && !L->contains(inst);
+            // bool op2DefinedOutside = !L->contains(cast<Instruction>(I->getOperand(1))->getParent());
+            outs() << defined << "        ";
+        }
+        outs() << "\n";
+        return defined;
     }
 
     bool safeToHoist(Instruction* I, Loop* L)
@@ -731,6 +764,7 @@ namespace
               {
                   for (auto& I : *B)
                   {
+                      //outs() << I << "\n";
                       if (!(I.getType()->isVoidTy()))
                       {
                           // Run a dominators and reaching definitions pass to see if an instruction can be safely moved outside the loop
@@ -745,10 +779,12 @@ namespace
               }
           }
 
+         // std::reverse(instsToMove.begin(), instsToMove.end());
+
           for (auto& I : instsToMove)
           {
-              outs() << I->getOpcodeName() << "\n";
-              I->moveAfter(L.getLoopPreheader()->begin());
+              //outs() << *I<< "\n";
+              I->moveBefore(L.getLoopPreheader()->end()->getPrevNode());
               //I->updateLocationAfterHoist();
               //I->removeFromParent();
           }
